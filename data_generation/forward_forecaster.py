@@ -572,6 +572,16 @@ Full Hidden State (including all weighted graph matrices):
 
 CRITICAL: Analyze the ACTUAL edge weights in the graphs. Do not use generic values. Each employee's probabilities should reflect their unique network position and connection strengths.
 
+REQUIRED OUTPUT STRUCTURE:
+You MUST return a JSON object with these REQUIRED fields:
+1. "individual_sentiments": An array with ONE entry for EACH employee (IDs 0 to {num_employees-1})
+   - Each entry must have: employee_id, sentiment, probabilities (oppose, neutral, support, escalate), influence_sources
+   - influence_sources: array of objects with employee_id, graph_type, influence_weight
+2. "aggregate_outcomes": Object with probabilities (oppose, neutral, support, escalate) and top_class
+3. Optional: "segments" (by_department, by_level), "features_importance", "rationale"
+
+DO NOT omit "individual_sentiments" - it is REQUIRED. Generate predictions for ALL {num_employees} employees.
+
 Horizon: {horizon}
 """
     
@@ -596,33 +606,71 @@ Horizon: {horizon}
                         "name": "forecast_output",
                         "strict": False,  # Set to False to allow optional fields like segments
                         "schema": FORECAST_SCHEMA,
-                        "description": "Organizational forecast with individual sentiment propagation (based on graph-theoretic analysis of weighted adjacency matrices) and aggregate outcomes. Probabilities should use 3-4 decimal precision."
+                        "description": "Organizational forecast with individual sentiment propagation. REQUIRED: individual_sentiments (array with one entry per employee), aggregate_outcomes (probabilities and top_class). Optional: segments, features_importance, rationale. Generate predictions for ALL employees in individual_sentiments array."
                     }
                 }
             )
             
             # Parse response
-            forecast_json = json.loads(response.choices[0].message.content)
+            raw_content = response.choices[0].message.content
+            try:
+                forecast_json = json.loads(raw_content)
+            except json.JSONDecodeError as e:
+                # Log the raw response for debugging
+                print(f"⚠ Failed to parse JSON response: {str(e)}")
+                print(f"Raw response (first 500 chars): {raw_content[:500]}")
+                if attempt < max_retries - 1:
+                    continue  # Retry
+                else:
+                    return {
+                        "scenario_id": scenario_id,
+                        "state_hash": state_hash,
+                        "error": True,
+                        "error_message": f"Invalid JSON response from OpenAI: {str(e)}"
+                    }
             
-            # Strip any unexpected 'type' fields that OpenAI might add
-            # (OpenAI's structured outputs sometimes adds metadata 'type' fields that violate additionalProperties: False)
-            # Since 'type' is not part of our data schema, we remove all 'type' fields from the response
-            def strip_type_fields(obj):
-                """Recursively remove 'type' fields from the response data."""
+            # Check if required fields are present before processing
+            missing_fields = []
+            required_fields = ["individual_sentiments", "aggregate_outcomes"]
+            for field in required_fields:
+                if field not in forecast_json:
+                    missing_fields.append(field)
+            
+            if missing_fields:
+                # Log what we got for debugging
+                print(f"⚠ Missing required fields: {missing_fields}")
+                print(f"Response keys: {list(forecast_json.keys())}")
+                if attempt < max_retries - 1:
+                    continue  # Retry
+                else:
+                    return {
+                        "scenario_id": scenario_id,
+                        "state_hash": state_hash,
+                        "error": True,
+                        "error_message": f"OpenAI response missing required fields: {missing_fields}. Response keys: {list(forecast_json.keys())}"
+                    }
+            
+            # Strip any unexpected metadata fields that OpenAI might add
+            # (OpenAI's structured outputs sometimes adds metadata fields like 'type' and 'properties' 
+            # that violate additionalProperties: False)
+            # These are not part of our data schema, so we remove them
+            def strip_metadata_fields(obj):
+                """Recursively remove metadata fields ('type', 'properties') from the response data."""
                 if isinstance(obj, dict):
-                    # Remove 'type' field if present (it's not in our data schema)
-                    if 'type' in obj:
-                        obj.pop('type', None)
+                    # Remove metadata fields if present (they're not in our data schema)
+                    for field in ['type', 'properties']:
+                        if field in obj:
+                            obj.pop(field, None)
                     # Recursively process nested structures
                     for value in obj.values():
                         if isinstance(value, (dict, list)):
-                            strip_type_fields(value)
+                            strip_metadata_fields(value)
                 elif isinstance(obj, list):
                     for item in obj:
-                        strip_type_fields(item)
+                        strip_metadata_fields(item)
                 return obj
             
-            forecast_json = strip_type_fields(forecast_json)
+            forecast_json = strip_metadata_fields(forecast_json)
             
             # Add required metadata
             forecast_json["scenario_id"] = scenario_id
@@ -668,6 +716,9 @@ Horizon: {horizon}
                     if agg_probs:
                         max_class = max(agg_probs.items(), key=lambda x: x[1])[0]
                         forecast_json["aggregate_outcomes"]["top_class"] = max_class
+            
+            # Strip metadata fields again after all modifications (safety check)
+            forecast_json = strip_metadata_fields(forecast_json)
             
             # Validate forecast
             is_valid, error_msg = validate_forecast(forecast_json)
