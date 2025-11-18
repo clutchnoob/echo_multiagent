@@ -103,3 +103,4 @@ if __name__ == "__main__":
         print("--- Generated Organizational Narrative ---")
         print(narrative_summary_json)
         print(f"\nSuccessfully saved encoded summary to: {output_file_path}")
+
