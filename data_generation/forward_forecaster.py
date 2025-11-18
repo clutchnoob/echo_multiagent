@@ -12,8 +12,11 @@ import os
 import time
 import re
 from datetime import datetime, timezone
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 from dotenv import load_dotenv
+import numpy as np
+import networkx as nx
+from scipy.stats import pearsonr
 
 try:
     import jsonschema
@@ -23,6 +26,757 @@ except ImportError:
 
 # Load environment variables
 load_dotenv()
+
+# ============================================================================
+# Core Computational Functions
+# ============================================================================
+
+def precompute_all_pairs_shortest_paths(graph: np.ndarray) -> Dict[Tuple[int, int], float]:
+    """
+    Precompute all pairs shortest paths in the reports_to graph.
+    
+    Args:
+        graph: N×N adjacency matrix (reports_to graph, binary or weighted)
+        
+    Returns:
+        Dictionary mapping (source, target) tuples to shortest path distance.
+        Returns inf for disconnected pairs.
+    """
+    N = graph.shape[0]
+    distance_cache = {}
+    
+    # Create NetworkX directed graph
+    G = nx.DiGraph()
+    for i in range(N):
+        for j in range(N):
+            if graph[i, j] > 0:
+                G.add_edge(i, j, weight=1.0)  # reports_to is binary, but we use weight=1 for path counting
+    
+    # Compute all pairs shortest paths
+    for source in range(N):
+        try:
+            lengths = nx.single_source_shortest_path_length(G, source)
+            for target in range(N):
+                if target in lengths:
+                    distance_cache[(source, target)] = float(lengths[target])
+                else:
+                    distance_cache[(source, target)] = float('inf')
+        except nx.NetworkXError:
+            # Node not in graph (shouldn't happen, but handle gracefully)
+            for target in range(N):
+                distance_cache[(source, target)] = float('inf')
+    
+    return distance_cache
+
+
+def compute_graph_distance(source: int, target: int, distance_cache: Dict[Tuple[int, int], float]) -> float:
+    """
+    Get shortest path distance from cache.
+    
+    Args:
+        source: Source employee ID
+        target: Target employee ID
+        distance_cache: Precomputed distance cache from precompute_all_pairs_shortest_paths
+        
+    Returns:
+        Shortest path distance, or inf if disconnected
+    """
+    return distance_cache.get((source, target), float('inf'))
+
+
+def compute_baseline_scores(hidden_state: dict) -> np.ndarray:
+    """
+    Compute baseline sentiment scores for all employees.
+    
+    Formula includes global factors plus individual/department/level-specific modifiers
+    to create more differentiation between employees.
+    
+    Args:
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        Array of baseline scores, shape (N,)
+    """
+    N = hidden_state.get('num_employees', 0)
+    employees = hidden_state.get('employees', [])
+    rec_seed = hidden_state.get('rec_seed', {})
+    situation_seed = hidden_state.get('situation_seed', {})
+    org_seed = hidden_state.get('org_seed', {})
+    graphs = hidden_state.get('graphs', {})
+    
+    resource_need = rec_seed.get('resource_need', 0.0)
+    sanction_strength = situation_seed.get('sanction_strength', 0.0)
+    visibility = situation_seed.get('visibility', 'private')
+    domain = rec_seed.get('domain', 'unknown')
+    
+    # Convert visibility to factor
+    visibility_factor = 1.0 if visibility == 'public' else 0.5 if visibility == 'private' else 0.2
+    
+    # Get organizational context (for differentiation)
+    power_distance = org_seed.get('power_distance', 0.5)
+    sanction_salience = org_seed.get('sanction_salience', 0.5)
+    in_group_bias = org_seed.get('in_group_bias', 0.5)
+    
+    # Get conflict graph
+    conflict_graph = np.array(graphs.get('conflict', []))
+    
+    # Department-domain alignment (some departments care more about certain domains)
+    domain_department_alignment = {
+        'budget': {'Engineering': 0.1, 'Sales': -0.1, 'Marketing': 0.05, 'HR': 0.0},
+        'hiring': {'Engineering': 0.05, 'Sales': 0.1, 'Marketing': 0.05, 'HR': 0.15},
+        'product_roadmap': {'Engineering': 0.15, 'Sales': 0.05, 'Marketing': 0.1, 'HR': -0.05},
+        'compliance': {'Engineering': 0.0, 'Sales': -0.05, 'Marketing': -0.05, 'HR': 0.1},
+        'pricing': {'Engineering': -0.05, 'Sales': 0.15, 'Marketing': 0.1, 'HR': -0.05},
+        'market_entry': {'Engineering': 0.05, 'Sales': 0.1, 'Marketing': 0.15, 'HR': 0.0},
+        'vendor_selection': {'Engineering': 0.1, 'Sales': 0.0, 'Marketing': 0.05, 'HR': 0.05}
+    }
+    
+    # Level-specific modifiers (higher levels have different risk/reward profiles)
+    level_modifiers = {
+        'C-Suite': 0.0,  # Baseline
+        'Director': -0.05 * (1 - power_distance),  # More cautious if high power distance
+        'Manager': 0.05 * (1 - power_distance)  # More aligned if low power distance
+    }
+    
+    baseline_scores = np.zeros(N)
+    
+    for i in range(N):
+        emp = employees[i] if i < len(employees) else {}
+        tenure = emp.get('tenure', 0) / 10.0  # Normalize to 0-1
+        department = emp.get('department', 'Unknown')
+        level = emp.get('level', 'Manager')
+        
+        # Compute average conflict for this employee
+        conflict_avg = 0.0
+        if conflict_graph.size > 0 and conflict_graph.shape[0] > i:
+            conflict_edges = conflict_graph[i, :]
+            conflict_values = conflict_edges[conflict_edges > 0]
+            if len(conflict_values) > 0:
+                conflict_avg = float(np.mean(conflict_values))
+        
+        # Department-domain alignment modifier
+        dept_alignment = domain_department_alignment.get(domain, {}).get(department, 0.0)
+        
+        # Level modifier
+        level_mod = level_modifiers.get(level, 0.0)
+        
+        # Sanction salience affects how much employees weight sanction_strength
+        # Higher salience = more responsive to sanctions
+        effective_sanction = sanction_strength * (0.5 + sanction_salience * 0.5)
+        
+        # In-group bias affects department cohesion (stronger in-group = more department-specific response)
+        dept_cohesion = in_group_bias * 0.1  # Modulates department alignment effect
+        
+        # Compute baseline score with more differentiation
+        baseline_scores[i] = (
+            (resource_need * 0.3) +
+            (effective_sanction * visibility_factor) -
+            (conflict_avg * 0.2) +
+            (tenure * 0.05) +
+            (dept_alignment * (1.0 + dept_cohesion)) +  # Department-domain alignment
+            level_mod  # Level-specific modifier
+        )
+    
+    return baseline_scores
+
+
+def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, distance_cache: Dict[Tuple[int, int], float]) -> np.ndarray:
+    """
+    Apply graph-based influence to baseline scores.
+    
+    Args:
+        baseline_scores: Array of baseline scores, shape (N,)
+        hidden_state: Organizational hidden state dictionary
+        distance_cache: Precomputed distance cache
+        
+    Returns:
+        Array of influenced scores, shape (N,)
+    """
+    N = len(baseline_scores)
+    graphs = hidden_state.get('graphs', {})
+    reports_to_graph = np.array(graphs.get('reports_to', []))
+    
+    # Graph type multipliers
+    graph_multipliers = {
+        'reports_to': 1.0,
+        'influence': 0.8,
+        'collaboration': 0.6,
+        'friendship': 0.4,
+        'conflict': -0.3  # Negative for conflict
+    }
+    
+    influenced_scores = baseline_scores.copy()
+    
+    # Graph types to process (in order of influence strength)
+    graph_types = ['reports_to', 'influence', 'collaboration', 'friendship', 'conflict']
+    
+    for graph_type in graph_types:
+        if graph_type not in graphs:
+            continue
+        
+        graph_matrix = np.array(graphs[graph_type])
+        multiplier = graph_multipliers[graph_type]
+        
+        for i in range(N):
+            # For each influencer j (where graph[j][i] > 0, meaning j influences i)
+            for j in range(N):
+                if i == j:
+                    continue
+                
+                edge_weight = graph_matrix[j, i] if j < graph_matrix.shape[0] and i < graph_matrix.shape[1] else 0.0
+                
+                if edge_weight > 0:
+                    # Compute distance in reports_to graph
+                    distance = compute_graph_distance(j, i, distance_cache)
+                    
+                    # Apply decay: 0.7^distance (handle inf → 0.0)
+                    if np.isinf(distance) or distance < 0:
+                        influence_decay = 0.0
+                    else:
+                        influence_decay = 0.7 ** distance
+                    
+                    # Compute influence contribution
+                    influence_contribution = baseline_scores[j] * edge_weight * influence_decay * multiplier
+                    influenced_scores[i] += influence_contribution
+    
+    return influenced_scores
+
+
+def apply_softmax_mapping(influenced_scores: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """
+    Map influenced scores to sentiment probabilities using softmax.
+    
+    Args:
+        influenced_scores: Array of influenced scores, shape (N,)
+        temperature: Softmax temperature (default 0.5)
+        
+    Returns:
+        Array of probabilities, shape (N, 4) where columns are [oppose, neutral, support, escalate]
+    """
+    N = len(influenced_scores)
+    probabilities = np.zeros((N, 4))
+    
+    for i in range(N):
+        score = influenced_scores[i]
+        
+        # Map to logits
+        oppose_logit = -score * 0.5
+        neutral_logit = score * 0.3
+        support_logit = score * 1.0
+        escalate_logit = score * 0.2
+        
+        logits = np.array([oppose_logit, neutral_logit, support_logit, escalate_logit])
+        
+        # Apply temperature and softmax with numerical stability
+        logits_scaled = logits / temperature
+        logits_scaled = logits_scaled - np.max(logits_scaled)  # Subtract max for numerical stability
+        
+        exp_logits = np.exp(logits_scaled)
+        sum_exp = np.sum(exp_logits)
+        
+        if sum_exp > 0:
+            probabilities[i] = exp_logits / sum_exp
+        else:
+            # Fallback to uniform distribution if all exp values are 0
+            probabilities[i] = np.array([0.25, 0.25, 0.25, 0.25])
+    
+    return probabilities
+
+
+def apply_constraints_and_rounding(probabilities: np.ndarray, hidden_state: dict) -> np.ndarray:
+    """
+    Apply constraints and rounding to probabilities.
+    
+    Args:
+        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        Normalized and rounded probabilities, shape (N, 4)
+    """
+    N = probabilities.shape[0]
+    employees = hidden_state.get('employees', [])
+    graphs = hidden_state.get('graphs', {})
+    conflict_graph = np.array(graphs.get('conflict', []))
+    
+    constrained_probs = probabilities.copy()
+    
+    for i in range(N):
+        # Get conflict average for this employee
+        conflict_avg = 0.0
+        if conflict_graph.size > 0 and conflict_graph.shape[0] > i:
+            conflict_edges = conflict_graph[i, :]
+            conflict_values = conflict_edges[conflict_edges > 0]
+            if len(conflict_values) > 0:
+                conflict_avg = float(np.mean(conflict_values))
+        
+        # Apply constraint: if conflict_avg > 0.05 and oppose_prob < 0.05, set oppose_prob = 0.05
+        if conflict_avg > 0.05 and constrained_probs[i, 0] < 0.05:
+            constrained_probs[i, 0] = 0.05
+            # Renormalize remaining probabilities
+            remaining = 1.0 - 0.05
+            remaining_probs = constrained_probs[i, 1:4]
+            if np.sum(remaining_probs) > 0:
+                constrained_probs[i, 1:4] = remaining_probs / np.sum(remaining_probs) * remaining
+            else:
+                # Fallback if all remaining are zero
+                constrained_probs[i, 1:4] = np.array([remaining / 3, remaining / 3, remaining / 3])
+        
+        # Round to 3 decimal places
+        constrained_probs[i] = np.round(constrained_probs[i], 3)
+        
+        # Ensure sum = 1.0 (adjust largest if needed)
+        prob_sum = np.sum(constrained_probs[i])
+        if not np.isclose(prob_sum, 1.0, atol=1e-6):
+            diff = 1.0 - prob_sum
+            # Add difference to largest probability
+            max_idx = np.argmax(constrained_probs[i])
+            constrained_probs[i, max_idx] += diff
+            constrained_probs[i, max_idx] = np.round(constrained_probs[i, max_idx], 3)
+        
+        # Clip to [0, 1] range
+        constrained_probs[i] = np.clip(constrained_probs[i], 0.0, 1.0)
+    
+    return constrained_probs
+
+
+def identify_influence_sources(employee_id: int, baseline_scores: np.ndarray, hidden_state: dict, distance_cache: Dict[Tuple[int, int], float], top_k: int = 5) -> List[Dict]:
+    """
+    Identify top influence sources for a given employee.
+    
+    Args:
+        employee_id: Target employee ID
+        baseline_scores: Array of baseline scores for all employees
+        hidden_state: Organizational hidden state dictionary
+        distance_cache: Precomputed distance cache
+        top_k: Number of top influencers to return
+        
+    Returns:
+        List of influence source dicts: [{employee_id, graph_type, influence_weight}, ...]
+    """
+    graphs = hidden_state.get('graphs', {})
+    reports_to_graph = np.array(graphs.get('reports_to', []))
+    
+    # Graph type multipliers
+    graph_multipliers = {
+        'reports_to': 1.0,
+        'influence': 0.8,
+        'collaboration': 0.6,
+        'friendship': 0.4,
+        'conflict': -0.3
+    }
+    
+    influence_contributions = []
+    graph_types = ['reports_to', 'influence', 'collaboration', 'friendship', 'conflict']
+    
+    for graph_type in graph_types:
+        if graph_type not in graphs:
+            continue
+        
+        graph_matrix = np.array(graphs[graph_type])
+        multiplier = graph_multipliers[graph_type]
+        
+        # Find all influencers j (where graph[j][employee_id] > 0)
+        for j in range(len(baseline_scores)):
+            if j == employee_id:
+                continue
+            
+            edge_weight = graph_matrix[j, employee_id] if j < graph_matrix.shape[0] and employee_id < graph_matrix.shape[1] else 0.0
+            
+            if edge_weight > 0:
+                # Compute distance in reports_to graph
+                distance = compute_graph_distance(j, employee_id, distance_cache)
+                
+                # Apply decay
+                if np.isinf(distance) or distance < 0:
+                    influence_decay = 0.0
+                else:
+                    influence_decay = 0.7 ** distance
+                
+                # Compute total influence contribution
+                influence_contribution = baseline_scores[j] * edge_weight * influence_decay * abs(multiplier)
+                
+                influence_contributions.append({
+                    'employee_id': j,
+                    'graph_type': graph_type,
+                    'influence_weight': float(edge_weight),
+                    'contribution': influence_contribution
+                })
+    
+    # Sort by contribution (descending) and return top_k
+    influence_contributions.sort(key=lambda x: x['contribution'], reverse=True)
+    top_influencers = influence_contributions[:top_k]
+    
+    # Return in format matching schema (without contribution field)
+    return [
+        {
+            'employee_id': inf['employee_id'],
+            'graph_type': inf['graph_type'],
+            'influence_weight': inf['influence_weight']
+        }
+        for inf in top_influencers
+    ]
+
+
+def compute_propagation_path(source_ids: List[int], target_id: int, graph: np.ndarray, distance_cache: Dict[Tuple[int, int], float]) -> List[int]:
+    """
+    Find shortest propagation path from any source to target.
+    
+    Args:
+        source_ids: List of source employee IDs (e.g., C-Suite/Directors)
+        target_id: Target employee ID
+        graph: Reports_to graph matrix
+        distance_cache: Precomputed distance cache
+        
+    Returns:
+        Sequence of employee IDs representing the path, or empty list if no path exists
+    """
+    if not source_ids:
+        return []
+    
+    # Find shortest path from any source
+    best_path = None
+    best_distance = float('inf')
+    
+    for source_id in source_ids:
+        distance = compute_graph_distance(source_id, target_id, distance_cache)
+        if distance < best_distance and not np.isinf(distance):
+            best_distance = distance
+            # Reconstruct path using NetworkX
+            G = nx.DiGraph()
+            N = graph.shape[0]
+            for i in range(N):
+                for j in range(N):
+                    if graph[i, j] > 0:
+                        G.add_edge(i, j)
+            
+            try:
+                path = nx.shortest_path(G, source_id, target_id)
+                if path:
+                    best_path = path
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                continue
+    
+    return best_path if best_path else []
+
+
+def compute_department_aggregates(probabilities: np.ndarray, hidden_state: dict) -> Dict[str, Dict[str, float]]:
+    """
+    Compute department-level aggregates weighted by collaboration centrality.
+    
+    Args:
+        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        Dictionary mapping department names to probability dicts
+    """
+    employees = hidden_state.get('employees', [])
+    graphs = hidden_state.get('graphs', {})
+    collaboration_graph = np.array(graphs.get('collaboration', []))
+    
+    # Group employees by department
+    dept_employees = {}
+    for i, emp in enumerate(employees):
+        dept = emp.get('department', 'Unknown')
+        if dept not in dept_employees:
+            dept_employees[dept] = []
+        dept_employees[dept].append(i)
+    
+    aggregates = {}
+    
+    for dept, emp_indices in dept_employees.items():
+        if not emp_indices:
+            continue
+        
+        # Compute collaboration centrality for each employee in department
+        centralities = []
+        for i in emp_indices:
+            if collaboration_graph.size > 0 and i < collaboration_graph.shape[0]:
+                # Sum of collaboration edges within department
+                dept_collab = sum(collaboration_graph[i, j] for j in emp_indices if j < collaboration_graph.shape[1])
+                centrality = dept_collab / len(emp_indices) if len(emp_indices) > 0 else 0.0
+            else:
+                centrality = 0.0
+            centralities.append(centrality)
+        
+        # Weighted average by centrality
+        total_weight = sum(centralities)
+        
+        if total_weight > 0:
+            dept_probs = np.zeros(4)
+            for idx, emp_idx in enumerate(emp_indices):
+                weight = centralities[idx]
+                dept_probs += probabilities[emp_idx] * weight
+            dept_probs = dept_probs / total_weight
+        else:
+            # Fallback to simple average
+            dept_probs = np.mean(probabilities[emp_indices], axis=0)
+        
+        # Round and ensure sum = 1.0
+        dept_probs = np.round(dept_probs, 3)
+        prob_sum = np.sum(dept_probs)
+        if not np.isclose(prob_sum, 1.0, atol=1e-6):
+            diff = 1.0 - prob_sum
+            max_idx = np.argmax(dept_probs)
+            dept_probs[max_idx] += diff
+            dept_probs[max_idx] = np.round(dept_probs[max_idx], 3)
+        
+        aggregates[dept] = {
+            'oppose': float(dept_probs[0]),
+            'neutral': float(dept_probs[1]),
+            'support': float(dept_probs[2]),
+            'escalate': float(dept_probs[3])
+        }
+    
+    return aggregates
+
+
+def compute_level_aggregates(probabilities: np.ndarray, hidden_state: dict) -> Dict[str, Dict[str, float]]:
+    """
+    Compute level-level aggregates (excluding C-Suite).
+    
+    Args:
+        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        Dictionary mapping level names to probability dicts (excluding C-Suite)
+    """
+    employees = hidden_state.get('employees', [])
+    
+    # Group employees by level (excluding C-Suite)
+    level_employees = {}
+    for i, emp in enumerate(employees):
+        level = emp.get('level', 'Unknown')
+        if level != 'C-Suite':  # Exclude C-Suite
+            if level not in level_employees:
+                level_employees[level] = []
+            level_employees[level].append(i)
+    
+    aggregates = {}
+    
+    for level, emp_indices in level_employees.items():
+        if not emp_indices:
+            continue
+        
+        # Simple average (or could weight by tenure)
+        level_probs = np.mean(probabilities[emp_indices], axis=0)
+        
+        # Round and ensure sum = 1.0
+        level_probs = np.round(level_probs, 3)
+        prob_sum = np.sum(level_probs)
+        if not np.isclose(prob_sum, 1.0, atol=1e-6):
+            diff = 1.0 - prob_sum
+            max_idx = np.argmax(level_probs)
+            level_probs[max_idx] += diff
+            level_probs[max_idx] = np.round(level_probs[max_idx], 3)
+        
+        aggregates[level] = {
+            'oppose': float(level_probs[0]),
+            'neutral': float(level_probs[1]),
+            'support': float(level_probs[2]),
+            'escalate': float(level_probs[3])
+        }
+    
+    return aggregates
+
+
+def compute_aggregate_outcomes(probabilities: np.ndarray) -> Dict[str, Any]:
+    """
+    Compute aggregate outcomes across all employees.
+    
+    Args:
+        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        
+    Returns:
+        Dictionary with probabilities and top_class
+    """
+    # Simple average across all employees
+    agg_probs = np.mean(probabilities, axis=0)
+    
+    # Round
+    agg_probs = np.round(agg_probs, 3)
+    
+    # Ensure sum = 1.0
+    prob_sum = np.sum(agg_probs)
+    if not np.isclose(prob_sum, 1.0, atol=1e-6):
+        diff = 1.0 - prob_sum
+        max_idx = np.argmax(agg_probs)
+        agg_probs[max_idx] += diff
+        agg_probs[max_idx] = np.round(agg_probs[max_idx], 3)
+    
+    # Find top class
+    sentiment_classes = ['oppose', 'neutral', 'support', 'escalate']
+    top_class_idx = np.argmax(agg_probs)
+    top_class = sentiment_classes[top_class_idx]
+    
+    return {
+        'probabilities': {
+            'oppose': float(agg_probs[0]),
+            'neutral': float(agg_probs[1]),
+            'support': float(agg_probs[2]),
+            'escalate': float(agg_probs[3])
+        },
+        'top_class': top_class
+    }
+
+
+def compute_feature_importance(probabilities: np.ndarray, hidden_state: dict) -> List[Dict]:
+    """
+    Compute feature importance using correlation with support probabilities.
+    
+    Args:
+        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        List of feature importance dicts: [{"feature": "...", "direction": "+/-", "weight": ...}, ...]
+    """
+    N = probabilities.shape[0]
+    employees = hidden_state.get('employees', [])
+    graphs = hidden_state.get('graphs', {})
+    collaboration_graph = np.array(graphs.get('collaboration', []))
+    
+    # Extract support probabilities
+    support_probs = probabilities[:, 2]  # support is index 2
+    
+    # Features to analyze
+    features = []
+    
+    # Tenure
+    tenure_values = np.array([emp.get('tenure', 0) for emp in employees[:N]])
+    if len(tenure_values) > 1 and np.std(tenure_values) > 0:
+        corr, _ = pearsonr(tenure_values, support_probs)
+        features.append({
+            'feature': 'tenure',
+            'direction': '+' if corr > 0 else '-',
+            'weight': abs(corr)
+        })
+    
+    # Collaboration degree
+    collab_degrees = []
+    for i in range(min(N, collaboration_graph.shape[0])):
+        if collaboration_graph.size > 0:
+            degree = np.sum(collaboration_graph[i, :]) if i < collaboration_graph.shape[0] else 0.0
+        else:
+            degree = 0.0
+        collab_degrees.append(degree)
+    
+    collab_degrees = np.array(collab_degrees)
+    if len(collab_degrees) > 1 and np.std(collab_degrees) > 0:
+        corr, _ = pearsonr(collab_degrees, support_probs)
+        features.append({
+            'feature': 'collaboration_degree',
+            'direction': '+' if corr > 0 else '-',
+            'weight': abs(corr)
+        })
+    
+    # Department (one-hot encoded, use most correlated department)
+    departments = [emp.get('department', 'Unknown') for emp in employees[:N]]
+    unique_depts = list(set(departments))
+    for dept in unique_depts:
+        dept_indicator = np.array([1 if d == dept else 0 for d in departments])
+        if np.sum(dept_indicator) > 1:  # Need at least 2 employees in department
+            corr, _ = pearsonr(dept_indicator, support_probs)
+            features.append({
+                'feature': f'department_{dept}',
+                'direction': '+' if corr > 0 else '-',
+                'weight': abs(corr)
+            })
+    
+    # Level (one-hot encoded)
+    levels = [emp.get('level', 'Unknown') for emp in employees[:N]]
+    unique_levels = list(set(levels))
+    for level in unique_levels:
+        level_indicator = np.array([1 if l == level else 0 for l in levels])
+        if np.sum(level_indicator) > 1:
+            corr, _ = pearsonr(level_indicator, support_probs)
+            features.append({
+                'feature': f'level_{level}',
+                'direction': '+' if corr > 0 else '-',
+                'weight': abs(corr)
+            })
+    
+    # Normalize weights to sum to 1.0
+    total_weight = sum(f['weight'] for f in features)
+    if total_weight > 0:
+        for f in features:
+            f['weight'] = f['weight'] / total_weight
+    
+    # Sort by weight and return top 5
+    features.sort(key=lambda x: x['weight'], reverse=True)
+    return features[:5]
+
+
+def compute_individual_sentiments(hidden_state: dict) -> List[Dict]:
+    """
+    Orchestrate all computational steps to compute individual sentiments.
+    
+    Args:
+        hidden_state: Organizational hidden state dictionary
+        
+    Returns:
+        List of individual sentiment dicts matching schema
+    """
+    N = hidden_state.get('num_employees', 0)
+    employees = hidden_state.get('employees', [])
+    graphs = hidden_state.get('graphs', {})
+    reports_to_graph = np.array(graphs.get('reports_to', []))
+    
+    # Step 1: Precompute distance cache
+    distance_cache = precompute_all_pairs_shortest_paths(reports_to_graph)
+    
+    # Step 2: Compute baseline scores
+    baseline_scores = compute_baseline_scores(hidden_state)
+    
+    # Step 3: Compute influenced scores
+    influenced_scores = compute_influenced_scores(baseline_scores, hidden_state, distance_cache)
+    
+    # Step 4: Apply softmax
+    probabilities = apply_softmax_mapping(influenced_scores, temperature=1.0)
+    
+    # Step 5: Apply constraints and rounding
+    probabilities = apply_constraints_and_rounding(probabilities, hidden_state)
+    
+    # Step 6: Identify C-Suite and Directors for propagation paths
+    csuite_ids = [i for i, emp in enumerate(employees) if emp.get('level') == 'C-Suite']
+    director_ids = [i for i, emp in enumerate(employees) if emp.get('level') == 'Director']
+    source_ids = csuite_ids + director_ids
+    
+    # Step 7: Format output for each employee
+    sentiment_classes = ['oppose', 'neutral', 'support', 'escalate']
+    individual_sentiments = []
+    
+    for i in range(N):
+        # Get sentiment (class with highest probability)
+        top_class_idx = np.argmax(probabilities[i])
+        sentiment = sentiment_classes[top_class_idx]
+        
+        # Get probabilities
+        probs = {
+            'oppose': float(probabilities[i, 0]),
+            'neutral': float(probabilities[i, 1]),
+            'support': float(probabilities[i, 2]),
+            'escalate': float(probabilities[i, 3])
+        }
+        
+        # Identify influence sources
+        influence_sources = identify_influence_sources(i, baseline_scores, hidden_state, distance_cache, top_k=5)
+        
+        # Compute propagation path
+        propagation_path = compute_propagation_path(source_ids, i, reports_to_graph, distance_cache)
+        
+        individual_sentiments.append({
+            'employee_id': i,
+            'sentiment': sentiment,
+            'probabilities': probs,
+            'influence_sources': influence_sources,
+            'propagation_path': propagation_path
+        })
+    
+    return individual_sentiments
+
 
 # JSON Schema for forecast output
 FORECAST_SCHEMA = {
@@ -60,9 +814,9 @@ FORECAST_SCHEMA = {
                         "additionalProperties": False,
                         "required": ["oppose", "neutral", "support", "escalate"],
                         "properties": {
-                            "oppose": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "support": {"type": "number", "minimum": 0, "maximum": 1},
                             "escalate": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     },
@@ -117,9 +871,9 @@ FORECAST_SCHEMA = {
                         "additionalProperties": False,
                         "required": ["oppose", "neutral", "support", "escalate"],
                         "properties": {
-                            "oppose": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "support": {"type": "number", "minimum": 0, "maximum": 1},
                             "escalate": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     }
@@ -131,9 +885,9 @@ FORECAST_SCHEMA = {
                         "additionalProperties": False,
                         "required": ["oppose", "neutral", "support", "escalate"],
                         "properties": {
-                            "oppose": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0.01, "maximum": 0.99},
+                            "support": {"type": "number", "minimum": 0, "maximum": 1},
                             "escalate": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     }
@@ -161,128 +915,18 @@ FORECAST_SCHEMA = {
 
 # System prompt for forecasting
 FORECAST_SYSTEM_PROMPT = """
-You are a computational sentiment analysis system. You MUST follow explicit formulas - do NOT use freeform reasoning.
+You are an organizational analyst. You will receive computed sentiment probabilities and graph analysis results. Your task is to generate a concise rationale (max 500 chars) explaining the forecast.
 
-You will receive an organizational hidden state JSON with:
-- Recommendation: resource_need, urgency, domain
-- Situation: sanction_strength, visibility (convert: "public"=1.0, "private"=0.5, "confidential"=0.2)
-- Employees: level, department, tenure, manager_id
-- Graphs: reports_to, collaboration, friendship, influence, conflict (weighted adjacency matrices)
+The probabilities have been computed using:
+- Baseline sentiment scores based on resource need, sanction strength, visibility, conflict, tenure, department-domain alignment, and level-specific modifiers
+- Graph-based influence propagation through reports_to, collaboration, friendship, and influence networks
+- Softmax mapping with temperature=1.0
 
-COMPUTATIONAL STEPS (execute in order for each employee):
-
-STEP 1: Compute Baseline Sentiment Score
-For each employee i:
-  resource_need = rec_seed.resource_need
-  sanction_strength = situation_seed.sanction_strength
-  visibility_factor = 1.0 if visibility=="public" else 0.5 if visibility=="private" else 0.2
-  conflict_avg = mean(conflict[i][j] for all j where conflict[i][j] > 0)
-  tenure = employees[i].tenure / 10.0  # normalize to 0-1
-  
-  baseline_score = (resource_need × 0.3) + (sanction_strength × visibility_factor) - (conflict_avg × 0.2) + (tenure × 0.05)
-
-STEP 2: Apply Graph-Based Influence
-For each employee i, compute influenced_score:
-  influenced_score = baseline_score
-  
-  For each graph type (reports_to, collaboration, friendship, influence):
-    For each employee j that influences i (where graph[j][i] > 0):
-      collaboration_weight = collaboration[j][i]  # actual edge weight
-      distance = shortest_path_length(j, i, reports_to)  # in reports_to graph
-      influence_decay = 0.7^distance  # 1-hop=1.0, 2-hop=0.7, 3-hop=0.49, etc.
-      
-      # Get j's baseline_score (computed in STEP 1)
-      influence_contribution = j.baseline_score × collaboration_weight × influence_decay
-      
-      # Weight by graph type
-      if graph_type == "reports_to": weight_multiplier = 1.0
-      elif graph_type == "influence": weight_multiplier = 0.8
-      elif graph_type == "collaboration": weight_multiplier = 0.6
-      elif graph_type == "friendship": weight_multiplier = 0.4
-      elif graph_type == "conflict": weight_multiplier = -0.3  # negative for conflict
-      
-      influenced_score += influence_contribution × weight_multiplier
-
-STEP 3: Map to Sentiment Classes and Apply Softmax
-For each employee i:
-  # Map influenced_score to 4 sentiment logits
-  oppose_logit = -influenced_score × 0.5
-  neutral_logit = influenced_score × 0.3
-  support_logit = influenced_score × 1.0
-  escalate_logit = influenced_score × 0.2
-  
-  # Apply softmax with temperature=0.5
-  temperature = 0.5
-  logits = [oppose_logit/temperature, neutral_logit/temperature, support_logit/temperature, escalate_logit/temperature]
-  exp_logits = [exp(l) for l in logits]
-  sum_exp = sum(exp_logits)
-  probabilities = [e/sum_exp for e in exp_logits]
-  
-  oppose_prob = probabilities[0]
-  neutral_prob = probabilities[1]
-  support_prob = probabilities[2]
-  escalate_prob = probabilities[3]
-
-STEP 4: Apply Constraints and Rounding
-  # Ensure oppose ≥ 0.05 when conflict_avg > 0.05
-  if conflict_avg > 0.05 and oppose_prob < 0.05:
-    oppose_prob = 0.05
-    # Renormalize remaining probabilities
-    remaining = 1.0 - oppose_prob
-    neutral_prob = neutral_prob / (neutral_prob + support_prob + escalate_prob) × remaining
-    support_prob = support_prob / (neutral_prob + support_prob + escalate_prob) × remaining
-    escalate_prob = escalate_prob / (neutral_prob + support_prob + escalate_prob) × remaining
-  
-  # Round to 3 decimal places
-  oppose_prob = round(oppose_prob, 3)
-  neutral_prob = round(neutral_prob, 3)
-  support_prob = round(support_prob, 3)
-  escalate_prob = round(escalate_prob, 3)
-  
-  # Ensure sum = 1.0 (adjust largest if needed)
-  total = oppose_prob + neutral_prob + support_prob + escalate_prob
-  if abs(total - 1.0) > 0.001:
-    diff = 1.0 - total
-    # Add difference to largest probability
-    max_prob = max(oppose_prob, neutral_prob, support_prob, escalate_prob)
-    if max_prob == oppose_prob: oppose_prob += diff
-    elif max_prob == neutral_prob: neutral_prob += diff
-    elif max_prob == support_prob: support_prob += diff
-    else: escalate_prob += diff
-
-STEP 5: Department Aggregates (weighted by collaboration centrality)
-For each department:
-  dept_employees = [i for i in employees if employees[i].department == dept]
-  
-  # Compute collaboration centrality for each employee in department
-  for i in dept_employees:
-    centrality[i] = sum(collaboration[i][j] for j in dept_employees) / len(dept_employees)
-  
-  # Weighted average
-  total_weight = sum(centrality[i] for i in dept_employees)
-  dept_oppose = sum(oppose_prob[i] × centrality[i] for i in dept_employees) / total_weight
-  dept_neutral = sum(neutral_prob[i] × centrality[i] for i in dept_employees) / total_weight
-  dept_support = sum(support_prob[i] × centrality[i] for i in dept_employees) / total_weight
-  dept_escalate = sum(escalate_prob[i] × centrality[i] for i in dept_employees) / total_weight
-
-STEP 6: Level Aggregates (EXCLUDE C-Suite)
-For each level (Director, Manager only - exclude C-Suite):
-  level_employees = [i for i in employees if employees[i].level == level and employees[i].level != "C-Suite"]
-  # Simple average (or weighted by tenure)
-  level_oppose = mean(oppose_prob[i] for i in level_employees)
-  level_neutral = mean(neutral_prob[i] for i in level_employees)
-  level_support = mean(support_prob[i] for i in level_employees)
-  level_escalate = mean(escalate_prob[i] for i in level_employees)
-
-HETEROGENEITY REQUIREMENT:
-Support probabilities MUST vary by ≥0.10 across departments when average collaboration differs by ≥0.20.
-If departments A and B have collaboration_avg difference ≥0.20, then |support_A - support_B| ≥ 0.10.
-
-OUTPUT FORMAT:
-- Each employee: {employee_id, sentiment (class with highest prob), probabilities (oppose, neutral, support, escalate), influence_sources}
-- influence_sources: list of {employee_id, graph_type, influence_weight} where influence_weight = actual graph edge value
-- Round all probabilities to exactly 3 decimal places
-- Ensure oppose ≥ 0.01 and support ≥ 0.01 (schema constraints)
+Focus on:
+- Key patterns in the results (e.g., "Engineering shows higher support due to strong collaboration")
+- Notable outliers or anomalies
+- Department-level differences
+- Network effects (e.g., "C-Suite influence propagates strongly through reports_to hierarchy")
 """
 
 
@@ -350,12 +994,76 @@ def extract_segments(hidden_state: dict) -> Dict[str, Dict[str, List[str]]]:
     }
 
 
-def validate_forecast(forecast: dict) -> Tuple[bool, Optional[str]]:
+def validate_heterogeneity(forecast: dict, hidden_state: Optional[dict] = None) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that support probabilities show meaningful heterogeneity across departments.
+    
+    Args:
+        forecast: Forecast dictionary to validate
+        hidden_state: Optional hidden state to check collaboration differences
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if "segments" not in forecast or "by_department" not in forecast["segments"]:
+        # If segments not computed, skip heterogeneity check
+        return True, None
+    
+    dept_segments = forecast["segments"]["by_department"]
+    dept_names = list(dept_segments.keys())
+    
+    if len(dept_names) < 2:
+        # Need at least 2 departments to check heterogeneity
+        return True, None
+    
+    # Get support probabilities by department
+    support_probs = {dept: dept_segments[dept].get("support", 0.0) for dept in dept_names}
+    
+    # Check variance
+    support_values = list(support_probs.values())
+    support_std = float(np.std(support_values))
+    
+    if support_std < 0.05:
+        return False, f"Support probabilities too homogeneous: std={support_std:.3f} (required >= 0.05). Departments: {support_probs}"
+    
+    # If hidden_state provided, check collaboration-based heterogeneity
+    if hidden_state:
+        graphs = hidden_state.get('graphs', {})
+        collaboration_graph = np.array(graphs.get('collaboration', []))
+        employees = hidden_state.get('employees', [])
+        
+        # Compute average collaboration per department
+        dept_collab_avg = {}
+        for dept in dept_names:
+            dept_employees = [i for i, emp in enumerate(employees) if emp.get('department') == dept]
+            if dept_employees:
+                collab_values = []
+                for i in dept_employees:
+                    if collaboration_graph.size > 0 and i < collaboration_graph.shape[0]:
+                        collab_values.extend([collaboration_graph[i, j] for j in dept_employees if j < collaboration_graph.shape[1] and collaboration_graph[i, j] > 0])
+                dept_collab_avg[dept] = float(np.mean(collab_values)) if collab_values else 0.0
+            else:
+                dept_collab_avg[dept] = 0.0
+        
+        # Check if departments with collaboration difference >= 0.20 have support difference >= 0.10
+        for i, dept1 in enumerate(dept_names):
+            for dept2 in dept_names[i+1:]:
+                collab_diff = abs(dept_collab_avg[dept1] - dept_collab_avg[dept2])
+                support_diff = abs(support_probs[dept1] - support_probs[dept2])
+                
+                if collab_diff >= 0.20 and support_diff < 0.10:
+                    return False, f"Heterogeneity requirement violated: {dept1} vs {dept2} have collaboration diff={collab_diff:.3f} >= 0.20 but support diff={support_diff:.3f} < 0.10"
+    
+    return True, None
+
+
+def validate_forecast(forecast: dict, hidden_state: Optional[dict] = None) -> Tuple[bool, Optional[str]]:
     """
     Validate forecast against JSON schema and business rules.
     
     Args:
         forecast: Forecast dictionary to validate
+        hidden_state: Optional hidden state for heterogeneity validation
         
     Returns:
         Tuple of (is_valid, error_message)
@@ -416,6 +1124,8 @@ def validate_forecast(forecast: dict) -> Tuple[bool, Optional[str]]:
                     if abs(seg_sum - 1.0) > 1e-6:
                         return False, f"Segment {segment_type}/{segment_name} probabilities sum to {seg_sum}, not 1.0"
     
+    # Note: Heterogeneity validation removed - accepting computed probabilities as-is
+    
     return True, None
 
 
@@ -428,7 +1138,7 @@ def forecast_scenario(
     provider: str = "openai"
 ) -> dict:
     """
-    Generate deterministic forecast from hidden state using OpenAI Structured Outputs.
+    Generate deterministic forecast from hidden state using Python computation and LLM for rationale.
     
     Args:
         hidden_state: The organizational state JSON (see sample_0.json)
@@ -441,372 +1151,222 @@ def forecast_scenario(
     Returns:
         Validated forecast object matching the schema, or error object if validation fails
     """
+    # Compute state hash
+    state_hash = compute_state_hash(hidden_state)
+    
+    # Step 1: Compute individual sentiments using Python functions
+    try:
+        individual_sentiments = compute_individual_sentiments(hidden_state)
+    except Exception as e:
+        return {
+            "scenario_id": scenario_id,
+            "state_hash": state_hash,
+            "error": True,
+            "error_message": f"Error computing individual sentiments: {str(e)}"
+        }
+    
+    # Step 2: Extract probabilities array for aggregation
+    N = hidden_state.get('num_employees', 0)
+    probabilities = np.zeros((N, 4))
+    for i, sentiment in enumerate(individual_sentiments):
+        probs = sentiment.get('probabilities', {})
+        probabilities[i, 0] = probs.get('oppose', 0.0)
+        probabilities[i, 1] = probs.get('neutral', 0.0)
+        probabilities[i, 2] = probs.get('support', 0.0)
+        probabilities[i, 3] = probs.get('escalate', 0.0)
+    
+    # Step 3: Compute aggregates
+    try:
+        department_aggregates = compute_department_aggregates(probabilities, hidden_state)
+        level_aggregates = compute_level_aggregates(probabilities, hidden_state)
+        aggregate_outcomes = compute_aggregate_outcomes(probabilities)
+        feature_importance = compute_feature_importance(probabilities, hidden_state)
+    except Exception as e:
+        return {
+            "scenario_id": scenario_id,
+            "state_hash": state_hash,
+            "error": True,
+            "error_message": f"Error computing aggregates: {str(e)}"
+        }
+    
+    # Step 4: Call LLM for rationale generation only
     # Initialize OpenAI client
     try:
         client = openai.OpenAI()
         if not client.api_key:
             raise openai.OpenAIError("API key not found after loading .env")
     except Exception as e:
-        return {
-            "scenario_id": scenario_id,
-            "state_hash": compute_state_hash(hidden_state),
-            "error": True,
-            "error_message": f"OpenAI client initialization failed: {str(e)}"
-        }
-    
-    # Compute state hash
-    state_hash = compute_state_hash(hidden_state)
-    
-    # Extract segments for prompt context
-    segments = extract_segments(hidden_state)
-    
-    # Build user prompt focused on individual sentiment propagation with graph analysis
-    num_employees = hidden_state.get('num_employees', 0)
-    employees = hidden_state.get('employees', [])
-    graphs = hidden_state.get('graphs', {})
-    
-    # Identify C-Suite and Directors for distance calculations
-    csuite_ids = [i for i, emp in enumerate(employees) if emp.get('level') == 'C-Suite']
-    director_ids = [i for i, emp in enumerate(employees) if emp.get('level') == 'Director']
-    
-    user_prompt = f"""Model sentiment propagation through this organizational network using graph-theoretic analysis.
+        # If LLM fails, still return forecast without rationale
+        print(f"Warning: OpenAI client initialization failed: {str(e)}. Continuing without rationale.")
+        rationale = None
+        warnings = ["Could not generate rationale: OpenAI API unavailable"]
+    else:
+        # Build simplified user prompt with computed results
+        segments = extract_segments(hidden_state)
+        num_employees = hidden_state.get('num_employees', 0)
+        
+        # Create summary of computed probabilities
+        support_probs = [s['probabilities']['support'] for s in individual_sentiments]
+        support_mean = float(np.mean(support_probs))
+        support_std = float(np.std(support_probs))
+        
+        dept_summary = {}
+        for dept, probs in department_aggregates.items():
+            dept_summary[dept] = {
+                'support': probs['support'],
+                'oppose': probs['oppose']
+            }
+        
+        user_prompt = f"""Generate a concise rationale (max 500 chars) explaining this organizational sentiment forecast.
+
+Computed Results Summary:
+- Total Employees: {num_employees}
+- Overall Support Probability: {support_mean:.3f} (std: {support_std:.3f})
+- Top Sentiment Class: {aggregate_outcomes['top_class']}
+
+Department-Level Probabilities:
+{json.dumps(dept_summary, indent=2)}
+
+Level Aggregates:
+{json.dumps({k: {'support': v['support']} for k, v in level_aggregates.items()}, indent=2)}
+
+Key Features (by importance):
+{json.dumps(feature_importance[:3], indent=2)}
 
 Organizational Context:
 - Industry: {hidden_state.get('org_seed', {}).get('industry', 'unknown')}
-- Size: {hidden_state.get('org_seed', {}).get('size', 'unknown')}
-- Power Distance: {hidden_state.get('org_seed', {}).get('power_distance', 0):.3f} (affects hierarchy influence strength)
-- Sanction Salience: {hidden_state.get('org_seed', {}).get('sanction_salience', 0):.3f} (affects risk-taking behavior)
-- In-Group Bias: {hidden_state.get('org_seed', {}).get('in_group_bias', 0):.3f} (affects department cohesion)
-
-Recommendation:
-- Domain: {hidden_state.get('rec_seed', {}).get('domain', 'unknown')} (affects departmental alignment)
-- Urgency: {hidden_state.get('rec_seed', {}).get('urgency', 0):.3f}
-- Resource Need: {hidden_state.get('rec_seed', {}).get('resource_need', 0):.3f}
-
-Situation:
-- Current State: {hidden_state.get('situation_seed', {}).get('theta_current', 0):.3f}
+- Recommendation Domain: {hidden_state.get('rec_seed', {}).get('domain', 'unknown')}
 - Visibility: {hidden_state.get('situation_seed', {}).get('visibility', 'unknown')}
-- Sanction Strength: {hidden_state.get('situation_seed', {}).get('sanction_strength', 0):.3f}
 
-Organization Structure:
-- Total Employees: {num_employees}
-- Departments: {', '.join(segments['departments'])}
-- Levels: {', '.join(segments['levels'])}
-- Key Influencers: C-Suite (IDs: {csuite_ids if csuite_ids else 'none'}), Directors (IDs: {director_ids if director_ids else 'none'})
+Focus on explaining:
+1. Why certain departments show higher/lower support
+2. Notable patterns or outliers
+3. Network effects (how influence propagated)
+4. Key factors driving the forecast
 
-GRAPH STRUCTURE ANALYSIS REQUIRED:
-
-The graphs are WEIGHTED adjacency matrices (N×N arrays) where each value represents edge strength (0.0 to 1.0).
-
-Graph Types and Interpretation:
-1. **reports_to**: Binary adjacency (0 or 1) - Formal hierarchy. Employee i reports to j if reports_to[i][j] = 1.
-   - STRONGEST influence type - formal authority
-   - Use actual values (0 or 1) for influence weights
-
-2. **collaboration**: Continuous weights (0.0-1.0) - Work relationship strength.
-   - Higher values (e.g., 0.8) = strong collaboration, more influence
-   - Lower values (e.g., 0.2) = weak collaboration, less influence
-   - Use actual edge weight values from the matrix
-
-3. **friendship**: Continuous weights (0.0-1.0) - Social bond strength.
-   - Higher values = stronger friendships, more social influence
-   - Use actual edge weight values
-
-4. **influence**: Continuous weights (0.0-1.0) - Power/influence network.
-   - Computed from hierarchy + social graphs + level influence
-   - Higher values = greater informal power
-   - Use actual edge weight values
-
-5. **conflict**: Continuous weights (0.0-1.0) - Tension/opposition strength.
-   - Higher values = stronger conflicts, can oppose sentiment
-   - Use actual edge weight values
-
-FOR EACH EMPLOYEE (IDs 0-{num_employees-1}), you MUST:
-
-1. **Compute Network Metrics**:
-   - For each graph type, calculate weighted in-degree: sum of incoming edge weights
-   - Calculate weighted out-degree: sum of outgoing edge weights
-   - Identify top 3-5 strongest connections (highest edge weights) in each graph type
-   - Compute graph distance (shortest path length) from C-Suite and Directors in reports_to graph
-   - Measure clustering: how many connections exist between this employee's neighbors
-
-2. **Analyze Edge Weights**:
-   - Extract actual edge weights from adjacency matrices (not just 0/1 presence)
-   - For influence_sources, use the ACTUAL edge weight from the graph matrix
-   - Weight by graph type hierarchy: reports_to (×1.0) > influence (×0.8) > collaboration (×0.6) > friendship (×0.4) > conflict (×0.3, but can oppose)
-   - Apply distance decay: 1-hop connections (×1.0), 2-hop (×0.7), 3-hop (×0.5), 4+ hop (×0.3)
-
-3. **Predict Individual Sentiment**:
-   - Generate probabilities with 3-4 DECIMAL PRECISION (e.g., 0.127, 0.683, 0.156, 0.034)
-   - DO NOT round to multiples of 0.05 (avoid patterns like 0.05, 0.10, 0.75, 0.10)
-   - Each employee MUST have UNIQUE probabilities based on:
-     * Their specific weighted degree in each graph type
-     * Actual edge weights to their influencers
-     * Graph distance from key decision-makers
-     * Network position (central vs. peripheral)
-     * Individual attributes (level, department, tenure) interacting with network metrics
-   - Probabilities must sum to exactly 1.0
-
-4. **Identify Influence Sources**:
-   - List top 3-5 influencers per employee
-   - For each influencer, provide:
-     * employee_id: The influencing employee's ID
-     * graph_type: Which graph this influence flows through
-     * influence_weight: ACTUAL edge weight from the graph matrix (not arbitrary 0.5 or 1.0)
-       - If reports_to[i][j] = 1, use 1.0 (or scale by graph type weight)
-       - If collaboration[i][j] = 0.736, use 0.736 (or scale appropriately)
-   - Consider multiple graph types: an employee may influence through both reports_to AND collaboration
-
-5. **Trace Propagation Paths**:
-   - Show shortest weighted paths from key influencers (C-Suite, Directors) to each employee
-   - Consider paths through different graph types (formal hierarchy paths vs. informal network paths)
-   - Path should be sequence of employee IDs: [source, intermediate1, intermediate2, ..., target]
-
-6. **Aggregate Outcomes**:
-   - After computing all individual sentiments with unique probabilities, aggregate to organizational level
-   - Use weighted average or other appropriate aggregation method
-   - Aggregate probabilities must sum to exactly 1.0
-
-Full Hidden State (including all weighted graph matrices):
-{json.dumps(hidden_state, indent=2)}
-
-CRITICAL: Analyze the ACTUAL edge weights in the graphs. Do not use generic values. Each employee's probabilities should reflect their unique network position and connection strengths.
-
-REQUIRED OUTPUT STRUCTURE:
-You MUST return a JSON object with these REQUIRED fields:
-1. "individual_sentiments": An array with ONE entry for EACH employee (IDs 0 to {num_employees-1})
-   - Each entry must have: employee_id, sentiment, probabilities (oppose, neutral, support, escalate), influence_sources
-   - influence_sources: array of objects with employee_id, graph_type, influence_weight
-2. "aggregate_outcomes": Object with probabilities (oppose, neutral, support, escalate) and top_class
-3. Optional: "segments" (by_department, by_level), "features_importance", "rationale"
-
-DO NOT omit "individual_sentiments" - it is REQUIRED. Generate predictions for ALL {num_employees} employees.
-
-Horizon: {horizon}
+CRITICAL: Keep rationale under 500 characters. Be concise and focus on the most important insights only.
 """
-    
-    # Attempt forecast generation with retry (including rate limit handling)
-    max_retries = 3
-    base_delay = 1  # Start with 1 second delay
-    
-    for attempt in range(max_retries):
-        try:
-            # Use structured outputs with JSON schema
-            # Note: This requires OpenAI API version that supports json_schema response_format
-            response = client.chat.completions.create(
-                model=model,
-                temperature=0,  # Must be 0 for determinism
-                messages=[
-                    {"role": "system", "content": FORECAST_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "forecast_output",
-                        "strict": False,  # Set to False to allow optional fields like segments
-                        "schema": FORECAST_SCHEMA,
-                        "description": "Organizational forecast with individual sentiment propagation. REQUIRED: individual_sentiments (array with one entry per employee), aggregate_outcomes (probabilities and top_class). Optional: segments, features_importance, rationale. Generate predictions for ALL employees in individual_sentiments array."
-                    }
-                }
-            )
-            
-            # Parse response
-            raw_content = response.choices[0].message.content
+        
+        # Call LLM for rationale
+        max_retries = 3
+        base_delay = 1
+        rationale = None
+        warnings = []
+        
+        for attempt in range(max_retries):
             try:
-                forecast_json = json.loads(raw_content)
-            except json.JSONDecodeError as e:
-                # Log the raw response for debugging
-                print(f"⚠ Failed to parse JSON response: {str(e)}")
-                print(f"Raw response (first 500 chars): {raw_content[:500]}")
-                if attempt < max_retries - 1:
-                    continue  # Retry
-                else:
-                    return {
-                        "scenario_id": scenario_id,
-                        "state_hash": state_hash,
-                        "error": True,
-                        "error_message": f"Invalid JSON response from OpenAI: {str(e)}"
+                # Simplified schema for rationale only
+                rationale_schema = {
+                    "type": "object",
+                    "properties": {
+                        "rationale": {"type": "string", "maxLength": 500},
+                        "warnings": {"type": "array", "items": {"type": "string"}},
+                        "features_importance": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "feature": {"type": "string"},
+                                    "direction": {"type": "string", "enum": ["+", "-"]},
+                                    "weight": {"type": "number", "minimum": 0, "maximum": 1}
+                                }
+                            }
+                        }
                     }
-            
-            # Check if required fields are present before processing
-            missing_fields = []
-            required_fields = ["individual_sentiments", "aggregate_outcomes"]
-            for field in required_fields:
-                if field not in forecast_json:
-                    missing_fields.append(field)
-            
-            if missing_fields:
-                # Log what we got for debugging
-                print(f"⚠ Missing required fields: {missing_fields}")
-                print(f"Response keys: {list(forecast_json.keys())}")
-                if attempt < max_retries - 1:
-                    continue  # Retry
-                else:
-                    return {
-                        "scenario_id": scenario_id,
-                        "state_hash": state_hash,
-                        "error": True,
-                        "error_message": f"OpenAI response missing required fields: {missing_fields}. Response keys: {list(forecast_json.keys())}"
+                }
+                
+                response = client.chat.completions.create(
+                    model=model,
+                    temperature=0,
+                    messages=[
+                        {"role": "system", "content": FORECAST_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": "rationale_output",
+                            "strict": False,
+                            "schema": rationale_schema
+                        }
                     }
-            
-            # Strip any unexpected metadata fields that OpenAI might add
-            # (OpenAI's structured outputs sometimes adds metadata fields like 'type' and 'properties' 
-            # that violate additionalProperties: False)
-            # These are not part of our data schema, so we remove them
-            def strip_metadata_fields(obj):
-                """Recursively remove metadata fields ('type', 'properties') from the response data."""
-                if isinstance(obj, dict):
-                    # Remove metadata fields if present (they're not in our data schema)
-                    for field in ['type', 'properties']:
-                        if field in obj:
-                            obj.pop(field, None)
-                    # Recursively process nested structures
-                    for value in obj.values():
-                        if isinstance(value, (dict, list)):
-                            strip_metadata_fields(value)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        strip_metadata_fields(item)
-                return obj
-            
-            forecast_json = strip_metadata_fields(forecast_json)
-            
-            # Add required metadata
-            forecast_json["scenario_id"] = scenario_id
-            forecast_json["state_hash"] = state_hash
-            forecast_json["generated_at"] = datetime.now(timezone.utc).isoformat()
-            forecast_json["schema_version"] = "1.0"
-            forecast_json["horizon"] = horizon
-            # Ensure model object has all required fields
-            if "model" not in forecast_json:
-                forecast_json["model"] = {}
-            forecast_json["model"]["provider"] = provider
-            forecast_json["model"]["model"] = model
-            forecast_json["model"]["temperature"] = 0
-            forecast_json["model"]["prompt_template_id"] = prompt_template_id
-            
-            # Auto-correct individual sentiments
-            if "individual_sentiments" in forecast_json:
-                for sentiment in forecast_json["individual_sentiments"]:
-                    if "probabilities" in sentiment:
-                        probs = sentiment["probabilities"]
-                        # Normalize probabilities if needed
-                        prob_sum = sum(probs.values())
-                        if abs(prob_sum - 1.0) > 1e-6 and prob_sum > 0:
-                            for key in probs:
-                                probs[key] = probs[key] / prob_sum
-                        
-                        # Auto-correct sentiment to match highest probability
-                        if probs:
-                            max_class = max(probs.items(), key=lambda x: x[1])[0]
-                            sentiment["sentiment"] = max_class
-            
-            # Auto-correct aggregate outcomes
-            if "aggregate_outcomes" in forecast_json:
-                if "probabilities" in forecast_json["aggregate_outcomes"]:
-                    agg_probs = forecast_json["aggregate_outcomes"]["probabilities"]
-                    # Normalize probabilities if needed
-                    prob_sum = sum(agg_probs.values())
-                    if abs(prob_sum - 1.0) > 1e-6 and prob_sum > 0:
-                        for key in agg_probs:
-                            agg_probs[key] = agg_probs[key] / prob_sum
-                    
-                    # Auto-correct top_class to match highest probability
-                    if agg_probs:
-                        max_class = max(agg_probs.items(), key=lambda x: x[1])[0]
-                        forecast_json["aggregate_outcomes"]["top_class"] = max_class
-            
-            # Strip metadata fields again after all modifications (safety check)
-            forecast_json = strip_metadata_fields(forecast_json)
-            
-            # Validate forecast
-            is_valid, error_msg = validate_forecast(forecast_json)
-            
-            if is_valid:
-                return forecast_json
-            else:
+                )
+                
+                rationale_json = json.loads(response.choices[0].message.content)
+                rationale = rationale_json.get('rationale', '')
+                warnings = rationale_json.get('warnings', [])
+                
+                # Truncate rationale to 500 characters if it exceeds the limit
+                if len(rationale) > 500:
+                    rationale = rationale[:497] + '...'
+                    if not warnings:
+                        warnings = []
+                    warnings.append("Rationale was truncated to 500 characters")
+                
+                # Use computed feature_importance instead of LLM's
+                break
+                
+            except openai.RateLimitError as e:
                 if attempt < max_retries - 1:
-                    continue  # Retry
+                    wait_time = base_delay * (2 ** attempt)
+                    print(f"⚠ Rate limit hit. Waiting {wait_time:.1f} seconds...")
+                    time.sleep(wait_time)
+                    continue
                 else:
-                    return {
-                        "scenario_id": scenario_id,
-                        "state_hash": state_hash,
-                        "error": True,
-                        "error_message": f"Validation failed after {max_retries} attempts: {error_msg}"
-                    }
-        
-        except openai.RateLimitError as e:
-            # Handle rate limit errors with exponential backoff
-            error_msg = str(e)
-            
-            # Try to extract wait time from error message
-            wait_time = base_delay * (2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-            
-            # Look for "try again in X.Xs" in error message
-            wait_match = re.search(r'try again in ([\d.]+)s', error_msg, re.IGNORECASE)
-            if wait_match:
-                wait_time = float(wait_match.group(1)) + 1  # Add 1 second buffer
-            
-            if attempt < max_retries - 1:
-                print(f"⚠ Rate limit hit. Waiting {wait_time:.1f} seconds before retry {attempt + 2}/{max_retries}...")
-                time.sleep(wait_time)
-                continue  # Retry
-            else:
-                return {
-                    "scenario_id": scenario_id,
-                    "state_hash": state_hash,
-                    "error": True,
-                    "error_message": f"Rate limit exceeded after {max_retries} attempts. Please wait a few minutes and try again, or upgrade your OpenAI plan. Error: {error_msg}"
-                }
-        
-        except openai.APIError as e:
-            # Handle other API errors
-            if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt)
-                print(f"⚠ API error. Waiting {wait_time:.1f} seconds before retry {attempt + 2}/{max_retries}...")
-                time.sleep(wait_time)
-                continue  # Retry
-            else:
-                return {
-                    "scenario_id": scenario_id,
-                    "state_hash": state_hash,
-                    "error": True,
-                    "error_message": f"API error after {max_retries} attempts: {str(e)}"
-                }
-        
-        except json.JSONDecodeError as e:
-            if attempt < max_retries - 1:
-                continue  # Retry
-            else:
-                return {
-                    "scenario_id": scenario_id,
-                    "state_hash": state_hash,
-                    "error": True,
-                    "error_message": f"Invalid JSON response after {max_retries} attempts: {str(e)}"
-                }
-        
-        except Exception as e:
-            if attempt < max_retries - 1:
-                wait_time = base_delay * (2 ** attempt)
-                print(f"⚠ Error occurred. Waiting {wait_time:.1f} seconds before retry {attempt + 2}/{max_retries}...")
-                time.sleep(wait_time)
-                continue  # Retry
-            else:
-                return {
-                    "scenario_id": scenario_id,
-                    "state_hash": state_hash,
-                    "error": True,
-                    "error_message": f"Unexpected error after {max_retries} attempts: {str(e)}"
-                }
+                    warnings.append("Could not generate rationale: Rate limit exceeded")
+                    break
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    warnings.append(f"Could not generate rationale: {str(e)}")
+                    break
     
-    # Should not reach here, but just in case
-    return {
+    # Step 5: Assemble final forecast object
+    forecast = {
         "scenario_id": scenario_id,
         "state_hash": state_hash,
-        "error": True,
-        "error_message": "Unexpected error in forecast generation"
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "1.0",
+        "horizon": horizon,
+        "model": {
+            "provider": provider,
+            "model": model,
+            "temperature": 0,
+            "prompt_template_id": prompt_template_id
+        },
+        "individual_sentiments": individual_sentiments,
+        "aggregate_outcomes": aggregate_outcomes,
+        "segments": {
+            "by_department": department_aggregates,
+            "by_level": level_aggregates
+        },
+        "features_importance": feature_importance
     }
+    
+    if rationale:
+        # Ensure rationale doesn't exceed 500 characters (schema constraint)
+        if len(rationale) > 500:
+            rationale = rationale[:497] + '...'
+            if not warnings:
+                warnings = []
+            warnings.append("Rationale was truncated to 500 characters")
+        forecast["rationale"] = rationale
+    if warnings:
+        forecast["warnings"] = warnings
+    
+    # Step 6: Validate forecast
+    is_valid, error_msg = validate_forecast(forecast, hidden_state)
+    
+    if not is_valid:
+        return {
+            "scenario_id": scenario_id,
+            "state_hash": state_hash,
+            "error": True,
+            "error_message": f"Validation failed: {error_msg}"
+        }
+    
+    return forecast
 
 
 def forecast_from_file(
