@@ -47,6 +47,7 @@ def precompute_all_pairs_shortest_paths(graph: np.ndarray) -> Dict[Tuple[int, in
     
     # Create NetworkX directed graph
     G = nx.DiGraph()
+    G.add_nodes_from(range(N))  # Ensure all nodes exist, even if isolated
     for i in range(N):
         for j in range(N):
             if graph[i, j] > 0:
@@ -84,7 +85,7 @@ def compute_graph_distance(source: int, target: int, distance_cache: Dict[Tuple[
     return distance_cache.get((source, target), float('inf'))
 
 
-def compute_baseline_scores(hidden_state: dict) -> np.ndarray:
+def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dict] = None) -> np.ndarray:
     """
     Compute baseline sentiment scores for all employees.
     
@@ -93,6 +94,7 @@ def compute_baseline_scores(hidden_state: dict) -> np.ndarray:
     
     Args:
         hidden_state: Organizational hidden state dictionary
+        scenario_modifiers: Optional dict with 'department_modifiers' and 'level_modifiers'
         
     Returns:
         Array of baseline scores, shape (N,)
@@ -103,6 +105,13 @@ def compute_baseline_scores(hidden_state: dict) -> np.ndarray:
     situation_seed = hidden_state.get('situation_seed', {})
     org_seed = hidden_state.get('org_seed', {})
     graphs = hidden_state.get('graphs', {})
+    
+    # Extract modifiers if provided
+    if scenario_modifiers is None:
+        scenario_modifiers = {}
+    
+    dept_scenario_mods = scenario_modifiers.get('department_modifiers', {})
+    level_scenario_mods = scenario_modifiers.get('level_modifiers', {})
     
     resource_need = rec_seed.get('resource_need', 0.0)
     sanction_strength = situation_seed.get('sanction_strength', 0.0)
@@ -167,14 +176,23 @@ def compute_baseline_scores(hidden_state: dict) -> np.ndarray:
         # In-group bias affects department cohesion (stronger in-group = more department-specific response)
         dept_cohesion = in_group_bias * 0.1  # Modulates department alignment effect
         
+        # Scenario-based modifiers (from narrative fusion)
+        scenario_dept_mod = dept_scenario_mods.get(department, 0.0)
+        scenario_level_mod = level_scenario_mods.get(level, 0.0)
+        
         # Compute baseline score with more differentiation
+        # We subtract 0.2 as a "cost of change" / inertia factor.
+        # Without this, the positive terms (resource_need, sanction) dominate, leading to perpetual "Support".
         baseline_scores[i] = (
             (resource_need * 0.3) +
             (effective_sanction * visibility_factor) -
             (conflict_avg * 0.2) +
             (tenure * 0.05) +
             (dept_alignment * (1.0 + dept_cohesion)) +  # Department-domain alignment
-            level_mod  # Level-specific modifier
+            level_mod +  # Structural level modifier
+            scenario_dept_mod + # Narrative-driven department modifier
+            scenario_level_mod - # Narrative-driven level modifier
+            0.25 # Inertia / Cost of Change
         )
     
     return baseline_scores
@@ -251,10 +269,10 @@ def apply_softmax_mapping(influenced_scores: np.ndarray, temperature: float = 1.
         temperature: Softmax temperature (default 0.5)
         
     Returns:
-        Array of probabilities, shape (N, 4) where columns are [oppose, neutral, support, escalate]
+        Array of probabilities, shape (N, 3) where columns are [oppose, neutral, support]
     """
     N = len(influenced_scores)
-    probabilities = np.zeros((N, 4))
+    probabilities = np.zeros((N, 3))
     
     for i in range(N):
         score = influenced_scores[i]
@@ -263,9 +281,8 @@ def apply_softmax_mapping(influenced_scores: np.ndarray, temperature: float = 1.
         oppose_logit = -score * 0.5
         neutral_logit = score * 0.3
         support_logit = score * 1.0
-        escalate_logit = score * 0.2
         
-        logits = np.array([oppose_logit, neutral_logit, support_logit, escalate_logit])
+        logits = np.array([oppose_logit, neutral_logit, support_logit])
         
         # Apply temperature and softmax with numerical stability
         logits_scaled = logits / temperature
@@ -278,7 +295,7 @@ def apply_softmax_mapping(influenced_scores: np.ndarray, temperature: float = 1.
             probabilities[i] = exp_logits / sum_exp
         else:
             # Fallback to uniform distribution if all exp values are 0
-            probabilities[i] = np.array([0.25, 0.25, 0.25, 0.25])
+            probabilities[i] = np.array([0.333, 0.333, 0.334])
     
     return probabilities
 
@@ -288,11 +305,11 @@ def apply_constraints_and_rounding(probabilities: np.ndarray, hidden_state: dict
     Apply constraints and rounding to probabilities.
     
     Args:
-        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        probabilities: Array of probabilities, shape (N, 3) [oppose, neutral, support]
         hidden_state: Organizational hidden state dictionary
         
     Returns:
-        Normalized and rounded probabilities, shape (N, 4)
+        Normalized and rounded probabilities, shape (N, 3)
     """
     N = probabilities.shape[0]
     employees = hidden_state.get('employees', [])
@@ -315,12 +332,12 @@ def apply_constraints_and_rounding(probabilities: np.ndarray, hidden_state: dict
             constrained_probs[i, 0] = 0.05
             # Renormalize remaining probabilities
             remaining = 1.0 - 0.05
-            remaining_probs = constrained_probs[i, 1:4]
+            remaining_probs = constrained_probs[i, 1:3]
             if np.sum(remaining_probs) > 0:
-                constrained_probs[i, 1:4] = remaining_probs / np.sum(remaining_probs) * remaining
+                constrained_probs[i, 1:3] = remaining_probs / np.sum(remaining_probs) * remaining
             else:
                 # Fallback if all remaining are zero
-                constrained_probs[i, 1:4] = np.array([remaining / 3, remaining / 3, remaining / 3])
+                constrained_probs[i, 1:3] = np.array([remaining / 2, remaining / 2])
         
         # Round to 3 decimal places
         constrained_probs[i] = np.round(constrained_probs[i], 3)
@@ -504,7 +521,7 @@ def compute_department_aggregates(probabilities: np.ndarray, hidden_state: dict)
         total_weight = sum(centralities)
         
         if total_weight > 0:
-            dept_probs = np.zeros(4)
+            dept_probs = np.zeros(3)
             for idx, emp_idx in enumerate(emp_indices):
                 weight = centralities[idx]
                 dept_probs += probabilities[emp_idx] * weight
@@ -525,8 +542,7 @@ def compute_department_aggregates(probabilities: np.ndarray, hidden_state: dict)
         aggregates[dept] = {
             'oppose': float(dept_probs[0]),
             'neutral': float(dept_probs[1]),
-            'support': float(dept_probs[2]),
-            'escalate': float(dept_probs[3])
+            'support': float(dept_probs[2])
         }
     
     return aggregates
@@ -575,8 +591,7 @@ def compute_level_aggregates(probabilities: np.ndarray, hidden_state: dict) -> D
         aggregates[level] = {
             'oppose': float(level_probs[0]),
             'neutral': float(level_probs[1]),
-            'support': float(level_probs[2]),
-            'escalate': float(level_probs[3])
+            'support': float(level_probs[2])
         }
     
     return aggregates
@@ -587,7 +602,7 @@ def compute_aggregate_outcomes(probabilities: np.ndarray) -> Dict[str, Any]:
     Compute aggregate outcomes across all employees.
     
     Args:
-        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        probabilities: Array of probabilities, shape (N, 3) [oppose, neutral, support]
         
     Returns:
         Dictionary with probabilities and top_class
@@ -607,7 +622,7 @@ def compute_aggregate_outcomes(probabilities: np.ndarray) -> Dict[str, Any]:
         agg_probs[max_idx] = np.round(agg_probs[max_idx], 3)
     
     # Find top class
-    sentiment_classes = ['oppose', 'neutral', 'support', 'escalate']
+    sentiment_classes = ['oppose', 'neutral', 'support']
     top_class_idx = np.argmax(agg_probs)
     top_class = sentiment_classes[top_class_idx]
     
@@ -615,8 +630,7 @@ def compute_aggregate_outcomes(probabilities: np.ndarray) -> Dict[str, Any]:
         'probabilities': {
             'oppose': float(agg_probs[0]),
             'neutral': float(agg_probs[1]),
-            'support': float(agg_probs[2]),
-            'escalate': float(agg_probs[3])
+            'support': float(agg_probs[2])
         },
         'top_class': top_class
     }
@@ -627,7 +641,7 @@ def compute_feature_importance(probabilities: np.ndarray, hidden_state: dict) ->
     Compute feature importance using correlation with support probabilities.
     
     Args:
-        probabilities: Array of probabilities, shape (N, 4) [oppose, neutral, support, escalate]
+        probabilities: Array of probabilities, shape (N, 3) [oppose, neutral, support]
         hidden_state: Organizational hidden state dictionary
         
     Returns:
@@ -709,12 +723,13 @@ def compute_feature_importance(probabilities: np.ndarray, hidden_state: dict) ->
     return features[:5]
 
 
-def compute_individual_sentiments(hidden_state: dict) -> List[Dict]:
+def compute_individual_sentiments(hidden_state: dict, narrative_context: Optional[dict] = None) -> List[Dict]:
     """
     Orchestrate all computational steps to compute individual sentiments.
     
     Args:
         hidden_state: Organizational hidden state dictionary
+        narrative_context: Optional dictionary with encoded narrative and scenario modifiers
         
     Returns:
         List of individual sentiment dicts matching schema
@@ -724,11 +739,16 @@ def compute_individual_sentiments(hidden_state: dict) -> List[Dict]:
     graphs = hidden_state.get('graphs', {})
     reports_to_graph = np.array(graphs.get('reports_to', []))
     
+    # Extract modifiers from narrative context if available
+    scenario_modifiers = None
+    if narrative_context and 'scenario_modifiers' in narrative_context:
+        scenario_modifiers = narrative_context['scenario_modifiers']
+    
     # Step 1: Precompute distance cache
     distance_cache = precompute_all_pairs_shortest_paths(reports_to_graph)
     
-    # Step 2: Compute baseline scores
-    baseline_scores = compute_baseline_scores(hidden_state)
+    # Step 2: Compute baseline scores (with narrative fusion)
+    baseline_scores = compute_baseline_scores(hidden_state, scenario_modifiers)
     
     # Step 3: Compute influenced scores
     influenced_scores = compute_influenced_scores(baseline_scores, hidden_state, distance_cache)
@@ -745,7 +765,7 @@ def compute_individual_sentiments(hidden_state: dict) -> List[Dict]:
     source_ids = csuite_ids + director_ids
     
     # Step 7: Format output for each employee
-    sentiment_classes = ['oppose', 'neutral', 'support', 'escalate']
+    sentiment_classes = ['oppose', 'neutral', 'support']
     individual_sentiments = []
     
     for i in range(N):
@@ -757,8 +777,7 @@ def compute_individual_sentiments(hidden_state: dict) -> List[Dict]:
         probs = {
             'oppose': float(probabilities[i, 0]),
             'neutral': float(probabilities[i, 1]),
-            'support': float(probabilities[i, 2]),
-            'escalate': float(probabilities[i, 3])
+            'support': float(probabilities[i, 2])
         }
         
         # Identify influence sources
@@ -808,16 +827,15 @@ FORECAST_SCHEMA = {
                 "required": ["employee_id", "sentiment", "probabilities", "influence_sources"],
                 "properties": {
                     "employee_id": {"type": "integer", "minimum": 0},
-                    "sentiment": {"type": "string", "enum": ["oppose", "neutral", "support", "escalate"]},
+                    "sentiment": {"type": "string", "enum": ["oppose", "neutral", "support"]},
                     "probabilities": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["oppose", "neutral", "support", "escalate"],
+                        "required": ["oppose", "neutral", "support"],
                         "properties": {
                             "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0, "maximum": 1},
-                            "escalate": {"type": "number", "minimum": 0, "maximum": 1}
+                            "support": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     },
                     "influence_sources": {
@@ -852,12 +870,11 @@ FORECAST_SCHEMA = {
                     "properties": {
                         "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                         "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                        "support": {"type": "number", "minimum": 0, "maximum": 1},
-                        "escalate": {"type": "number", "minimum": 0, "maximum": 1}
+                        "support": {"type": "number", "minimum": 0, "maximum": 1}
                     },
-                    "required": ["oppose", "neutral", "support", "escalate"]
+                    "required": ["oppose", "neutral", "support"]
                 },
-                "top_class": {"type": "string", "enum": ["oppose", "neutral", "support", "escalate"]}
+                "top_class": {"type": "string", "enum": ["oppose", "neutral", "support"]}
             }
         },
         "segments": {
@@ -869,12 +886,11 @@ FORECAST_SCHEMA = {
                     "additionalProperties": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["oppose", "neutral", "support", "escalate"],
+                        "required": ["oppose", "neutral", "support"],
                         "properties": {
                             "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0, "maximum": 1},
-                            "escalate": {"type": "number", "minimum": 0, "maximum": 1}
+                            "support": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     }
                 },
@@ -883,12 +899,11 @@ FORECAST_SCHEMA = {
                     "additionalProperties": {
                         "type": "object",
                         "additionalProperties": False,
-                        "required": ["oppose", "neutral", "support", "escalate"],
+                        "required": ["oppose", "neutral", "support"],
                         "properties": {
                             "oppose": {"type": "number", "minimum": 0, "maximum": 1},
                             "neutral": {"type": "number", "minimum": 0, "maximum": 1},
-                            "support": {"type": "number", "minimum": 0, "maximum": 1},
-                            "escalate": {"type": "number", "minimum": 0, "maximum": 1}
+                            "support": {"type": "number", "minimum": 0, "maximum": 1}
                         }
                     }
                 }
@@ -1135,28 +1150,30 @@ def forecast_scenario(
     model: str = "gpt-4o-mini",
     prompt_template_id: str = "v3",
     horizon: str = "decision",
-    provider: str = "openai"
+    provider: str = "openai",
+    narrative_context: Optional[dict] = None
 ) -> dict:
     """
     Generate deterministic forecast from hidden state using Python computation and LLM for rationale.
     
     Args:
-        hidden_state: The organizational state JSON (see sample_0.json)
+        hidden_state: The organizational state JSON
         scenario_id: Unique identifier for this scenario
         model: OpenAI model name
         prompt_template_id: Version identifier for the prompt template
-        horizon: Forecast horizon ("decision", "next_cycle", or "quarter")
-        provider: API provider ("openai" or "azure_openai")
+        horizon: Forecast horizon
+        provider: API provider
+        narrative_context: Optional dictionary containing encoded narrative (story, relationships, etc.)
         
     Returns:
-        Validated forecast object matching the schema, or error object if validation fails
+        Validated forecast object matching the schema
     """
     # Compute state hash
     state_hash = compute_state_hash(hidden_state)
     
     # Step 1: Compute individual sentiments using Python functions
     try:
-        individual_sentiments = compute_individual_sentiments(hidden_state)
+        individual_sentiments = compute_individual_sentiments(hidden_state, narrative_context)
     except Exception as e:
         return {
             "scenario_id": scenario_id,
@@ -1167,13 +1184,12 @@ def forecast_scenario(
     
     # Step 2: Extract probabilities array for aggregation
     N = hidden_state.get('num_employees', 0)
-    probabilities = np.zeros((N, 4))
+    probabilities = np.zeros((N, 3))
     for i, sentiment in enumerate(individual_sentiments):
         probs = sentiment.get('probabilities', {})
         probabilities[i, 0] = probs.get('oppose', 0.0)
         probabilities[i, 1] = probs.get('neutral', 0.0)
         probabilities[i, 2] = probs.get('support', 0.0)
-        probabilities[i, 3] = probs.get('escalate', 0.0)
     
     # Step 3: Compute aggregates
     try:
@@ -1217,6 +1233,16 @@ def forecast_scenario(
                 'oppose': probs['oppose']
             }
         
+        # Build narrative context string if available
+        narrative_section = ""
+        if narrative_context:
+            narrative_section = f"""
+Narrative Context:
+- Company Story: {narrative_context.get('company_story', 'N/A')[:500]}...
+- Key Relationships: {narrative_context.get('key_relationships', 'N/A')[:500]}...
+- Scenario: {narrative_context.get('recommendation_scenario', 'N/A')[:500]}...
+"""
+
         user_prompt = f"""Generate a concise rationale (max 500 chars) explaining this organizational sentiment forecast.
 
 Computed Results Summary:
@@ -1236,13 +1262,14 @@ Key Features (by importance):
 Organizational Context:
 - Industry: {hidden_state.get('org_seed', {}).get('industry', 'unknown')}
 - Recommendation Domain: {hidden_state.get('rec_seed', {}).get('domain', 'unknown')}
-- Visibility: {hidden_state.get('situation_seed', {}).get('visibility', 'unknown')}
+- Visibility: {hidden_state.get('situation_seed', {}).get('visibility', 'unknown')}{narrative_section}
 
 Focus on explaining:
 1. Why certain departments show higher/lower support
 2. Notable patterns or outliers
 3. Network effects (how influence propagated)
 4. Key factors driving the forecast
+5. How the company's story/culture (if provided) aligns with these results
 
 CRITICAL: Keep rationale under 500 characters. Be concise and focus on the most important insights only.
 """

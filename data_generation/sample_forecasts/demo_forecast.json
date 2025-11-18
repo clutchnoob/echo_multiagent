@@ -1,7 +1,7 @@
 {
   "scenario_id": "demo_scenario",
-  "state_hash": "sha256:0d2382692d8ec5d7f0f566d9bc2eacfe31c0fd35490d179f5e6474f5a4feb5f7",
-  "generated_at": "2025-11-18T03:38:24.086084+00:00",
+  "state_hash": "sha256:e61c1cffe64fcb54a0b8d6559a33336cc75db80c649eefe7bc595c59ac6199d6",
+  "generated_at": "2025-11-18T23:10:54.145732+00:00",
   "schema_version": "1.0",
   "horizon": "decision",
   "model": {
@@ -15,36 +15,35 @@
       "employee_id": 0,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.164,
-        "neutral": 0.247,
-        "support": 0.354,
-        "escalate": 0.235
+        "oppose": 0.282,
+        "neutral": 0.333,
+        "support": 0.385
       },
       "influence_sources": [
         {
           "employee_id": 1,
           "graph_type": "influence",
-          "influence_weight": 0.42822818665395673
+          "influence_weight": 0.4889265873023277
         },
         {
           "employee_id": 2,
           "graph_type": "influence",
-          "influence_weight": 0.43267995908642104
+          "influence_weight": 0.27401500885710844
         },
         {
           "employee_id": 3,
           "graph_type": "influence",
-          "influence_weight": 0.432184102046442
+          "influence_weight": 0.2733355845109282
         },
         {
           "employee_id": 4,
           "graph_type": "influence",
-          "influence_weight": 0.4293399340565703
+          "influence_weight": 0.2736679076453238
         },
         {
           "employee_id": 5,
           "graph_type": "influence",
-          "influence_weight": 0.2275123651927509
+          "influence_weight": 0.27135816949978775
         }
       ],
       "propagation_path": [
@@ -55,10 +54,9 @@
       "employee_id": 1,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.079,
-        "neutral": 0.215,
-        "support": 0.516,
-        "escalate": 0.19
+        "oppose": 0.222,
+        "neutral": 0.325,
+        "support": 0.453
       },
       "influence_sources": [
         {
@@ -74,7 +72,7 @@
         {
           "employee_id": 0,
           "graph_type": "collaboration",
-          "influence_weight": 0.819579995762217
+          "influence_weight": 0.8947511037682918
         },
         {
           "employee_id": 0,
@@ -84,7 +82,7 @@
         {
           "employee_id": 0,
           "graph_type": "conflict",
-          "influence_weight": 0.0042795951309083195
+          "influence_weight": 0.0025205863639369635
         }
       ],
       "propagation_path": [
@@ -95,39 +93,39 @@
       "employee_id": 2,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.068,
-        "neutral": 0.207,
-        "support": 0.545,
-        "escalate": 0.18
+        "oppose": 0.236,
+        "neutral": 0.328,
+        "support": 0.436
       },
       "influence_sources": [
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "reports_to",
           "influence_weight": 1.0
         },
         {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 1.0
+          "influence_weight": 0.630075100177255
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
+          "graph_type": "influence",
+          "influence_weight": 0.9889265873023276
+        },
+        {
+          "employee_id": 1,
           "graph_type": "collaboration",
-          "influence_weight": 0.7176985004103839
+          "influence_weight": 0.8884403511369705
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "friendship",
           "influence_weight": 1.0
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "conflict",
-          "influence_weight": 0.007837855422975118
         }
       ],
       "propagation_path": [
+        1,
         2
       ]
     },
@@ -135,39 +133,39 @@
       "employee_id": 3,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.08,
-        "neutral": 0.216,
-        "support": 0.514,
-        "escalate": 0.19
+        "oppose": 0.223,
+        "neutral": 0.325,
+        "support": 0.452
       },
       "influence_sources": [
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "reports_to",
           "influence_weight": 1.0
         },
         {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 1.0
+          "influence_weight": 0.630075100177255
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
+          "graph_type": "influence",
+          "influence_weight": 0.9889265873023276
+        },
+        {
+          "employee_id": 1,
           "graph_type": "collaboration",
-          "influence_weight": 0.7090454577821076
+          "influence_weight": 0.7770833005079831
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "friendship",
           "influence_weight": 1.0
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "conflict",
-          "influence_weight": 0.0068106742247633885
         }
       ],
       "propagation_path": [
+        1,
         3
       ]
     },
@@ -175,39 +173,39 @@
       "employee_id": 4,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.082,
-        "neutral": 0.217,
-        "support": 0.509,
-        "escalate": 0.192
+        "oppose": 0.243,
+        "neutral": 0.329,
+        "support": 0.428
       },
       "influence_sources": [
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "reports_to",
           "influence_weight": 1.0
         },
         {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 1.0
+          "influence_weight": 0.630075100177255
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
+          "graph_type": "influence",
+          "influence_weight": 0.9889265873023276
+        },
+        {
+          "employee_id": 1,
           "graph_type": "collaboration",
-          "influence_weight": 0.7777354579378963
+          "influence_weight": 0.7461787651244297
         },
         {
-          "employee_id": 0,
+          "employee_id": 1,
           "graph_type": "friendship",
           "influence_weight": 1.0
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "conflict",
-          "influence_weight": 0.00651403434870432
         }
       ],
       "propagation_path": [
+        1,
         4
       ]
     },
@@ -215,40 +213,39 @@
       "employee_id": 5,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.076,
-        "neutral": 0.213,
-        "support": 0.524,
-        "escalate": 0.187
+        "oppose": 0.224,
+        "neutral": 0.325,
+        "support": 0.451
       },
       "influence_sources": [
         {
-          "employee_id": 3,
+          "employee_id": 1,
           "graph_type": "reports_to",
           "influence_weight": 1.0
         },
         {
-          "employee_id": 3,
-          "graph_type": "influence",
-          "influence_weight": 0.932184102046442
-        },
-        {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
+          "influence_weight": 0.630075100177255
         },
         {
-          "employee_id": 3,
+          "employee_id": 1,
+          "graph_type": "influence",
+          "influence_weight": 0.9889265873023276
+        },
+        {
+          "employee_id": 1,
           "graph_type": "collaboration",
-          "influence_weight": 0.7557292928473223
+          "influence_weight": 0.8366527037650916
         },
         {
-          "employee_id": 3,
+          "employee_id": 1,
           "graph_type": "friendship",
           "influence_weight": 1.0
         }
       ],
       "propagation_path": [
-        3,
+        1,
         5
       ]
     },
@@ -256,40 +253,39 @@
       "employee_id": 6,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.112,
-        "neutral": 0.233,
-        "support": 0.443,
-        "escalate": 0.212
+        "oppose": 0.227,
+        "neutral": 0.326,
+        "support": 0.447
       },
       "influence_sources": [
         {
-          "employee_id": 4,
+          "employee_id": 1,
           "graph_type": "reports_to",
           "influence_weight": 1.0
         },
         {
-          "employee_id": 4,
-          "graph_type": "influence",
-          "influence_weight": 0.9293399340565702
-        },
-        {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
+          "influence_weight": 0.630075100177255
         },
         {
-          "employee_id": 4,
+          "employee_id": 1,
+          "graph_type": "influence",
+          "influence_weight": 0.9889265873023276
+        },
+        {
+          "employee_id": 1,
           "graph_type": "collaboration",
-          "influence_weight": 0.7348732858009982
+          "influence_weight": 0.8666389823472328
         },
         {
-          "employee_id": 4,
+          "employee_id": 1,
           "graph_type": "friendship",
           "influence_weight": 1.0
         }
       ],
       "propagation_path": [
-        4,
+        1,
         6
       ]
     },
@@ -297,666 +293,76 @@
       "employee_id": 7,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.089,
-        "neutral": 0.221,
-        "support": 0.492,
-        "escalate": 0.198
+        "oppose": 0.286,
+        "neutral": 0.333,
+        "support": 0.381
       },
       "influence_sources": [
-        {
-          "employee_id": 1,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "influence",
-          "influence_weight": 0.9282281866539567
-        },
         {
           "employee_id": 0,
           "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7855082036717099
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        1,
-        7
-      ]
-    },
-    {
-      "employee_id": 8,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.077,
-        "neutral": 0.214,
-        "support": 0.521,
-        "escalate": 0.188
-      },
-      "influence_sources": [
-        {
-          "employee_id": 2,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "influence",
-          "influence_weight": 0.9326799590864211
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7854215577252512
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        2,
-        8
-      ]
-    },
-    {
-      "employee_id": 9,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.08,
-        "neutral": 0.216,
-        "support": 0.513,
-        "escalate": 0.191
-      },
-      "influence_sources": [
-        {
-          "employee_id": 4,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "influence",
-          "influence_weight": 0.9293399340565702
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7682132702100517
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        4,
-        9
-      ]
-    },
-    {
-      "employee_id": 10,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.092,
-        "neutral": 0.223,
-        "support": 0.485,
-        "escalate": 0.2
-      },
-      "influence_sources": [
-        {
-          "employee_id": 1,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
+          "influence_weight": 0.630075100177255
         },
         {
           "employee_id": 1,
           "graph_type": "influence",
-          "influence_weight": 0.9282281866539567
+          "influence_weight": 0.4889265873023277
         },
         {
-          "employee_id": 0,
+          "employee_id": 2,
           "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
+          "influence_weight": 0.27401500885710844
         },
         {
-          "employee_id": 1,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7628711962152653
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        1,
-        10
-      ]
-    },
-    {
-      "employee_id": 11,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.109,
-        "neutral": 0.232,
-        "support": 0.448,
-        "escalate": 0.211
-      },
-      "influence_sources": [
-        {
-          "employee_id": 4,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
+          "employee_id": 3,
+          "graph_type": "influence",
+          "influence_weight": 0.2733355845109282
         },
         {
           "employee_id": 4,
           "graph_type": "influence",
-          "influence_weight": 0.9293399340565702
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8754678706761961
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
+          "influence_weight": 0.2736679076453238
         }
       ],
-      "propagation_path": [
-        4,
-        11
-      ]
-    },
-    {
-      "employee_id": 12,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.059,
-        "neutral": 0.198,
-        "support": 0.573,
-        "escalate": 0.17
-      },
-      "influence_sources": [
-        {
-          "employee_id": 2,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "influence",
-          "influence_weight": 0.9326799590864211
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7834822006297557
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        2,
-        12
-      ]
-    },
-    {
-      "employee_id": 13,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.074,
-        "neutral": 0.211,
-        "support": 0.53,
-        "escalate": 0.185
-      },
-      "influence_sources": [
-        {
-          "employee_id": 3,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "influence",
-          "influence_weight": 0.932184102046442
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8264611661187159
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        3,
-        13
-      ]
-    },
-    {
-      "employee_id": 14,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.059,
-        "neutral": 0.198,
-        "support": 0.573,
-        "escalate": 0.17
-      },
-      "influence_sources": [
-        {
-          "employee_id": 2,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "influence",
-          "influence_weight": 0.9326799590864211
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7675230342807255
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        2,
-        14
-      ]
-    },
-    {
-      "employee_id": 15,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.081,
-        "neutral": 0.217,
-        "support": 0.51,
-        "escalate": 0.192
-      },
-      "influence_sources": [
-        {
-          "employee_id": 4,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "influence",
-          "influence_weight": 0.9293399340565702
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8059301156712013
-        },
-        {
-          "employee_id": 4,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        4,
-        15
-      ]
-    },
-    {
-      "employee_id": 16,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.084,
-        "neutral": 0.218,
-        "support": 0.504,
-        "escalate": 0.194
-      },
-      "influence_sources": [
-        {
-          "employee_id": 3,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "influence",
-          "influence_weight": 0.932184102046442
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8670604991178475
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        3,
-        16
-      ]
-    },
-    {
-      "employee_id": 17,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.089,
-        "neutral": 0.222,
-        "support": 0.491,
-        "escalate": 0.198
-      },
-      "influence_sources": [
-        {
-          "employee_id": 1,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "influence",
-          "influence_weight": 0.9282281866539567
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7322442574508008
-        },
-        {
-          "employee_id": 1,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        1,
-        17
-      ]
-    },
-    {
-      "employee_id": 18,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.056,
-        "neutral": 0.195,
-        "support": 0.582,
-        "escalate": 0.167
-      },
-      "influence_sources": [
-        {
-          "employee_id": 2,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "influence",
-          "influence_weight": 0.9326799590864211
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8924894589884222
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        2,
-        18
-      ]
-    },
-    {
-      "employee_id": 19,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.088,
-        "neutral": 0.221,
-        "support": 0.494,
-        "escalate": 0.197
-      },
-      "influence_sources": [
-        {
-          "employee_id": 3,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "influence",
-          "influence_weight": 0.932184102046442
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8181785886376484
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        3,
-        19
-      ]
-    },
-    {
-      "employee_id": 20,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.059,
-        "neutral": 0.198,
-        "support": 0.573,
-        "escalate": 0.17
-      },
-      "influence_sources": [
-        {
-          "employee_id": 2,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "influence",
-          "influence_weight": 0.9326799590864211
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "collaboration",
-          "influence_weight": 0.7569680988754934
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 2,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        2,
-        20
-      ]
-    },
-    {
-      "employee_id": 21,
-      "sentiment": "support",
-      "probabilities": {
-        "oppose": 0.075,
-        "neutral": 0.212,
-        "support": 0.527,
-        "escalate": 0.186
-      },
-      "influence_sources": [
-        {
-          "employee_id": 3,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "influence",
-          "influence_weight": 0.932184102046442
-        },
-        {
-          "employee_id": 0,
-          "graph_type": "influence",
-          "influence_weight": 0.6203083248110999
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "collaboration",
-          "influence_weight": 0.8024186116598562
-        },
-        {
-          "employee_id": 3,
-          "graph_type": "friendship",
-          "influence_weight": 1.0
-        }
-      ],
-      "propagation_path": [
-        3,
-        21
-      ]
+      "propagation_path": []
     }
   ],
   "aggregate_outcomes": {
     "probabilities": {
-      "oppose": 0.083,
-      "neutral": 0.216,
-      "support": 0.51,
-      "escalate": 0.191
+      "oppose": 0.243,
+      "neutral": 0.328,
+      "support": 0.429
     },
     "top_class": "support"
   },
   "segments": {
     "by_department": {
       "Engineering": {
-        "oppose": 0.076,
-        "neutral": 0.209,
-        "support": 0.532,
-        "escalate": 0.183
+        "oppose": 0.233,
+        "neutral": 0.327,
+        "support": 0.44
       },
       "Sales": {
-        "oppose": 0.09,
-        "neutral": 0.221,
-        "support": 0.491,
-        "escalate": 0.198
+        "oppose": 0.222,
+        "neutral": 0.325,
+        "support": 0.453
       },
       "Marketing": {
-        "oppose": 0.085,
-        "neutral": 0.218,
-        "support": 0.503,
-        "escalate": 0.194
-      },
-      "HR": {
-        "oppose": 0.092,
-        "neutral": 0.223,
-        "support": 0.485,
-        "escalate": 0.2
+        "oppose": 0.25,
+        "neutral": 0.329,
+        "support": 0.421
       }
     },
     "by_level": {
       "Director": {
-        "oppose": 0.077,
-        "neutral": 0.214,
-        "support": 0.521,
-        "escalate": 0.188
+        "oppose": 0.222,
+        "neutral": 0.325,
+        "support": 0.453
       },
       "Manager": {
-        "oppose": 0.08,
-        "neutral": 0.214,
-        "support": 0.517,
-        "escalate": 0.189
+        "oppose": 0.24,
+        "neutral": 0.328,
+        "support": 0.432
       }
     }
   },
@@ -964,31 +370,28 @@
     {
       "feature": "collaboration_degree",
       "direction": "+",
-      "weight": 0.2388274840663052
+      "weight": 0.42251392095733104
     },
     {
-      "feature": "department_Engineering",
-      "direction": "+",
-      "weight": 0.2189781066066703
+      "feature": "tenure",
+      "direction": "-",
+      "weight": 0.23173842291113622
+    },
+    {
+      "feature": "department_Marketing",
+      "direction": "-",
+      "weight": 0.17667257773309014
     },
     {
       "feature": "level_Manager",
       "direction": "+",
-      "weight": 0.18417321533078207
+      "weight": 0.09439293032234718
     },
     {
-      "feature": "department_Sales",
-      "direction": "-",
-      "weight": 0.1687383079736141
-    },
-    {
-      "feature": "level_Director",
+      "feature": "department_Engineering",
       "direction": "+",
-      "weight": 0.0781314040432997
+      "weight": 0.07468214807609544
     }
   ],
-  "rationale": "Engineering leads in support (0.532) due to strong collaboration, which is the most influential factor (weight 0.239). Sales and Marketing show moderate support, while HR lags slightly (0.485). Director and Manager levels maintain similar support, indicating stable sentiment across management. The overall support probability of 0.510 suggests a balanced sentiment, with collaboration and departmental alignment driving positive perceptions. C-Suite influence likely enhances support through hier...",
-  "warnings": [
-    "Rationale was truncated to 500 characters"
-  ]
+  "rationale": "Support is highest in Sales (0.453) and Engineering (0.44), driven by strong collaboration, which is the most influential factor (+0.422). Marketing shows lower support (0.421) likely due to its negative weight (-0.176) and lower collaboration. Directors exhibit higher support (0.453) compared to Managers (0.432), indicating a top-down influence. Overall, the healthcare context and private visibility may foster cautious optimism, aligning with the organization's collaborative culture."
 }
