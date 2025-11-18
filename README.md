@@ -2,7 +2,7 @@
 
 **A Multiagent Learning System for Organizational Sentiment Propagation Forecasting**
 
-*MIT 6.S890: Multiagent Learning | Fall 2024*
+*MIT 6.S890: Multiagent Learning | Fall 2025*
 
 ---
 
@@ -779,7 +779,7 @@ Oppose:     4.5% ██
 
 ### Course Information
 
-This project was developed for **MIT 6.S890: Multiagent Learning** (Fall 2024), exploring how multiagent systems principles can be applied to organizational dynamics and decision-making.
+This project was developed for **MIT 6.S890: Multiagent Learning** (Fall 2025), exploring how multiagent systems principles can be applied to organizational dynamics and decision-making.
 
 ### Relevant Literature
 
@@ -819,5 +819,5 @@ For questions, suggestions, or collaboration opportunities, please open an issue
 
 ---
 
-**Project Status**: Active Development | **Version**: 1.0 | **Last Updated**: November 2024
+**Project Status**: Active Development | **Version**: 1.0 | **Last Updated**: November 2025
 
