@@ -117,27 +117,49 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
     sanction_strength = situation_seed.get('sanction_strength', 0.0)
     visibility = situation_seed.get('visibility', 'private')
     domain = rec_seed.get('domain', 'unknown')
+    urgency = rec_seed.get('urgency', 0.5)
+    theta_ideal = rec_seed.get('theta_ideal', 0.5)
+    theta_current = situation_seed.get('theta_current', 0.5)
+    provocation_flag = situation_seed.get('provocation_flag', 0)
     
     # Convert visibility to factor
     visibility_factor = 1.0 if visibility == 'public' else 0.5 if visibility == 'private' else 0.2
     
     # Get organizational context (for differentiation)
     power_distance = org_seed.get('power_distance', 0.5)
-    sanction_salience = org_seed.get('sanction_salience', 0.5)
-    in_group_bias = org_seed.get('in_group_bias', 0.5)
+    industry = org_seed.get('industry', 'tech')
+    # Note: sanction_salience and in_group_bias are now per-employee (read from employee dict)
+    # Fallback to org-level if not present (for backward compatibility)
+    org_sanction_salience = org_seed.get('sanction_salience', 0.5)
+    org_in_group_bias = org_seed.get('in_group_bias', 0.5)
+    
+    # Industry-specific risk profiles (affects baseline risk tolerance)
+    industry_risk_profiles = {
+        'tech': 0.1,        # More risk-tolerant
+        'finance': -0.1,    # More risk-averse
+        'healthcare': -0.15, # Very risk-averse
+        'manufacturing': 0.0, # Neutral
+        'government': -0.2   # Most risk-averse
+    }
+    industry_risk_mod = industry_risk_profiles.get(industry, 0.0)
+    
+    # Theta alignment: how well does current state align with ideal?
+    # Positive = aligned (supports change), Negative = misaligned (resists change)
+    theta_alignment = theta_ideal - theta_current  # Range: -1 to +1
     
     # Get conflict graph
     conflict_graph = np.array(graphs.get('conflict', []))
     
     # Department-domain alignment (some departments care more about certain domains)
+    # Increased ranges for more differentiation
     domain_department_alignment = {
-        'budget': {'Engineering': 0.1, 'Sales': -0.1, 'Marketing': 0.05, 'HR': 0.0},
-        'hiring': {'Engineering': 0.05, 'Sales': 0.1, 'Marketing': 0.05, 'HR': 0.15},
-        'product_roadmap': {'Engineering': 0.15, 'Sales': 0.05, 'Marketing': 0.1, 'HR': -0.05},
-        'compliance': {'Engineering': 0.0, 'Sales': -0.05, 'Marketing': -0.05, 'HR': 0.1},
-        'pricing': {'Engineering': -0.05, 'Sales': 0.15, 'Marketing': 0.1, 'HR': -0.05},
-        'market_entry': {'Engineering': 0.05, 'Sales': 0.1, 'Marketing': 0.15, 'HR': 0.0},
-        'vendor_selection': {'Engineering': 0.1, 'Sales': 0.0, 'Marketing': 0.05, 'HR': 0.05}
+        'budget': {'Engineering': 0.2, 'Sales': -0.2, 'Marketing': 0.1, 'HR': 0.0},
+        'hiring': {'Engineering': 0.1, 'Sales': 0.2, 'Marketing': 0.1, 'HR': 0.3},
+        'product_roadmap': {'Engineering': 0.3, 'Sales': 0.1, 'Marketing': 0.2, 'HR': -0.1},
+        'compliance': {'Engineering': 0.0, 'Sales': -0.1, 'Marketing': -0.1, 'HR': 0.2},
+        'pricing': {'Engineering': -0.1, 'Sales': 0.3, 'Marketing': 0.2, 'HR': -0.1},
+        'market_entry': {'Engineering': 0.1, 'Sales': 0.2, 'Marketing': 0.3, 'HR': 0.0},
+        'vendor_selection': {'Engineering': 0.2, 'Sales': 0.0, 'Marketing': 0.1, 'HR': 0.1}
     }
     
     # Level-specific modifiers (higher levels have different risk/reward profiles)
@@ -155,6 +177,10 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         department = emp.get('department', 'Unknown')
         level = emp.get('level', 'Manager')
         
+        # Get individual personality traits (with fallback to org-level for backward compatibility)
+        individual_sanction_salience = emp.get('sanction_salience', org_sanction_salience)
+        individual_in_group_bias = emp.get('in_group_bias', org_in_group_bias)
+        
         # Compute average conflict for this employee
         conflict_avg = 0.0
         if conflict_graph.size > 0 and conflict_graph.shape[0] > i:
@@ -166,28 +192,52 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         # Department-domain alignment modifier
         dept_alignment = domain_department_alignment.get(domain, {}).get(department, 0.0)
         
-        # Level modifier
+        # Level modifier (increased range)
         level_mod = level_modifiers.get(level, 0.0)
         
-        # Sanction salience affects how much employees weight sanction_strength
-        # Higher salience = more responsive to sanctions
-        effective_sanction = sanction_strength * (0.5 + sanction_salience * 0.5)
+        # Sanction salience affects how much THIS EMPLOYEE weights sanction_strength
+        # Higher salience = more responsive to sanctions (individual variation)
+        effective_sanction = sanction_strength * (0.5 + individual_sanction_salience * 0.5)
         
-        # In-group bias affects department cohesion (stronger in-group = more department-specific response)
-        dept_cohesion = in_group_bias * 0.1  # Modulates department alignment effect
+        # In-group bias affects department cohesion for THIS EMPLOYEE
+        # Stronger in-group = more department-specific response (individual variation)
+        dept_cohesion = individual_in_group_bias * 0.2  # Increased from 0.1 to 0.2
         
         # Scenario-based modifiers (from narrative fusion)
         scenario_dept_mod = dept_scenario_mods.get(department, 0.0)
         scenario_level_mod = level_scenario_mods.get(level, 0.0)
         
+        # Urgency modifier: high urgency creates time pressure (affects all, but individual response varies)
+        # Higher urgency = more support for change (but individual personality modulates)
+        urgency_mod = urgency * (0.3 + individual_sanction_salience * 0.2)  # Range: 0.3*urgency to 0.5*urgency
+        
+        # Theta alignment: measures how well recommendation aligns with current state
+        # Individual variation: people with high in_group_bias resist misalignment more
+        alignment_mod = theta_alignment * (1.0 - individual_in_group_bias * 0.5)  # High in-group = less responsive to alignment
+        
+        # Provocation flag: creates polarization (increases conflict effects)
+        # When provoked, conflict has stronger negative impact, and alignment matters less
+        if provocation_flag:
+            conflict_multiplier = 1.5  # Amplify conflict effects
+            alignment_mod *= 0.5  # Reduce alignment impact when provoked
+        else:
+            conflict_multiplier = 1.0
+        
+        # Industry risk profile affects baseline (all employees, but level modulates)
+        # Higher levels have more industry risk exposure
+        level_risk_exposure = {'C-Suite': 1.0, 'Director': 0.7, 'Manager': 0.4}.get(level, 0.4)
+        industry_mod = industry_risk_mod * level_risk_exposure
+        
         # Compute baseline score with more differentiation
-        # We subtract 0.2 as a "cost of change" / inertia factor.
-        # Without this, the positive terms (resource_need, sanction) dominate, leading to perpetual "Support".
+        # Increased weights on individual factors, reduced global dominance
         baseline_scores[i] = (
-            (resource_need * 0.3) +
-            (effective_sanction * visibility_factor) -
-            (conflict_avg * 0.2) +
-            (tenure * 0.05) +
+            (resource_need * 0.2) +  # Reduced from 0.3 to 0.2 (less global dominance)
+            (effective_sanction * visibility_factor * 0.8) +  # Slightly reduced
+            (urgency_mod * 0.3) +  # NEW: Urgency effect
+            (alignment_mod * 0.4) +  # NEW: Theta alignment effect
+            (industry_mod) +  # NEW: Industry risk profile
+            -(conflict_avg * 0.4 * conflict_multiplier) +  # Increased from 0.2 to 0.4, with provocation multiplier
+            (tenure * 0.15) +  # Increased from 0.05 to 0.15 (more individual variation)
             (dept_alignment * (1.0 + dept_cohesion)) +  # Department-domain alignment
             level_mod +  # Structural level modifier
             scenario_dept_mod + # Narrative-driven department modifier
@@ -200,7 +250,8 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
 
 def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, distance_cache: Dict[Tuple[int, int], float]) -> np.ndarray:
     """
-    Apply graph-based influence to baseline scores.
+    Apply graph-based influence to baseline scores with reduced propagation strength
+    and opinion leader identification via PageRank.
     
     Args:
         baseline_scores: Array of baseline scores, shape (N,)
@@ -213,17 +264,52 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
     N = len(baseline_scores)
     graphs = hidden_state.get('graphs', {})
     reports_to_graph = np.array(graphs.get('reports_to', []))
+    employees = hidden_state.get('employees', [])
     
-    # Graph type multipliers
+    # Compute PageRank on combined social graph to identify opinion leaders
+    # Combine collaboration and friendship graphs for social influence network
+    social_graph = np.zeros((N, N))
+    if 'collaboration' in graphs:
+        social_graph += np.array(graphs['collaboration'])
+    if 'friendship' in graphs:
+        social_graph += np.array(graphs['friendship'])
+    
+    # Add self-loops for numerical stability
+    np.fill_diagonal(social_graph, 0.1)
+    
+    # Compute PageRank
+    try:
+        G_social = nx.from_numpy_array(social_graph, create_using=nx.DiGraph)
+        pagerank_scores = nx.pagerank(G_social, alpha=0.85, max_iter=100)
+        # Normalize PageRank to [0, 1] range for use as multiplier
+        pr_values = np.array([pagerank_scores.get(i, 0.0) for i in range(N)])
+        if pr_values.max() > 0:
+            pr_values = pr_values / pr_values.max()
+    except:
+        # Fallback if PageRank fails
+        pr_values = np.ones(N) * 0.5
+    
+    # Reduced graph type multipliers (to prevent over-mixing)
     graph_multipliers = {
-        'reports_to': 1.0,
-        'influence': 0.8,
-        'collaboration': 0.6,
-        'friendship': 0.4,
-        'conflict': -0.3  # Negative for conflict
+        'reports_to': 0.5,      # Reduced from 1.0
+        'influence': 0.4,        # Reduced from 0.8
+        'collaboration': 0.3,    # Reduced from 0.6
+        'friendship': 0.2,       # Reduced from 0.4
+        'conflict': -0.2         # Reduced from -0.3
     }
     
+    # Compute individual resistance factors based on personality
+    # People with high in_group_bias are more resistant to external influence
+    org_in_group_bias = hidden_state.get('org_seed', {}).get('in_group_bias', 0.5)
+    resistance_factors = np.ones(N)
+    for i in range(N):
+        emp = employees[i] if i < len(employees) else {}
+        individual_in_group_bias = emp.get('in_group_bias', org_in_group_bias)
+        # High in-group bias = more resistance (0.5 to 1.0 multiplier)
+        resistance_factors[i] = 0.5 + (1.0 - individual_in_group_bias) * 0.5
+    
     influenced_scores = baseline_scores.copy()
+    total_influence = np.zeros(N)  # Track total influence received for normalization
     
     # Graph types to process (in order of influence strength)
     graph_types = ['reports_to', 'influence', 'collaboration', 'friendship', 'conflict']
@@ -247,15 +333,41 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
                     # Compute distance in reports_to graph
                     distance = compute_graph_distance(j, i, distance_cache)
                     
-                    # Apply decay: 0.7^distance (handle inf → 0.0)
+                    # Apply stronger decay: 0.5^distance (reduced from 0.7^distance)
                     if np.isinf(distance) or distance < 0:
                         influence_decay = 0.0
                     else:
-                        influence_decay = 0.7 ** distance
+                        influence_decay = 0.5 ** distance  # Faster decay
+                    
+                    # Opinion leader boost: people with high PageRank have more influence
+                    opinion_leader_boost = 1.0 + pr_values[j] * 0.5  # Up to 1.5x for top influencers
                     
                     # Compute influence contribution
-                    influence_contribution = baseline_scores[j] * edge_weight * influence_decay * multiplier
+                    influence_contribution = (
+                        baseline_scores[j] * 
+                        edge_weight * 
+                        influence_decay * 
+                        multiplier * 
+                        opinion_leader_boost
+                    )
+                    
+                    # Apply resistance factor (individuals resist influence based on personality)
+                    influence_contribution *= resistance_factors[i]
+                    
                     influenced_scores[i] += influence_contribution
+                    total_influence[i] += abs(influence_contribution)
+    
+    # Normalize influence to prevent it from overwhelming baseline
+    # If total influence is too high relative to baseline, scale it down
+    baseline_magnitude = np.abs(baseline_scores)
+    baseline_magnitude = np.where(baseline_magnitude < 0.1, 0.1, baseline_magnitude)  # Avoid division by zero
+    
+    for i in range(N):
+        if total_influence[i] > baseline_magnitude[i] * 0.5:  # If influence > 50% of baseline magnitude
+            # Scale down the influence contribution proportionally
+            scale_factor = (baseline_magnitude[i] * 0.5) / total_influence[i]
+            # Recompute influenced score with scaled influence
+            influenced_scores[i] = baseline_scores[i] + (influenced_scores[i] - baseline_scores[i]) * scale_factor
     
     return influenced_scores
 
@@ -374,14 +486,32 @@ def identify_influence_sources(employee_id: int, baseline_scores: np.ndarray, hi
     graphs = hidden_state.get('graphs', {})
     reports_to_graph = np.array(graphs.get('reports_to', []))
     
-    # Graph type multipliers
+    # Graph type multipliers (matching compute_influenced_scores)
     graph_multipliers = {
-        'reports_to': 1.0,
-        'influence': 0.8,
-        'collaboration': 0.6,
-        'friendship': 0.4,
-        'conflict': -0.3
+        'reports_to': 0.5,
+        'influence': 0.4,
+        'collaboration': 0.3,
+        'friendship': 0.2,
+        'conflict': -0.2
     }
+    
+    # Compute PageRank for opinion leader boost (same as in compute_influenced_scores)
+    N = len(baseline_scores)
+    social_graph = np.zeros((N, N))
+    if 'collaboration' in graphs:
+        social_graph += np.array(graphs['collaboration'])
+    if 'friendship' in graphs:
+        social_graph += np.array(graphs['friendship'])
+    np.fill_diagonal(social_graph, 0.1)
+    
+    try:
+        G_social = nx.from_numpy_array(social_graph, create_using=nx.DiGraph)
+        pagerank_scores = nx.pagerank(G_social, alpha=0.85, max_iter=100)
+        pr_values = np.array([pagerank_scores.get(i, 0.0) for i in range(N)])
+        if pr_values.max() > 0:
+            pr_values = pr_values / pr_values.max()
+    except:
+        pr_values = np.ones(N) * 0.5
     
     influence_contributions = []
     graph_types = ['reports_to', 'influence', 'collaboration', 'friendship', 'conflict']
@@ -404,14 +534,17 @@ def identify_influence_sources(employee_id: int, baseline_scores: np.ndarray, hi
                 # Compute distance in reports_to graph
                 distance = compute_graph_distance(j, employee_id, distance_cache)
                 
-                # Apply decay
+                # Apply decay (matching compute_influenced_scores: 0.5^distance)
                 if np.isinf(distance) or distance < 0:
                     influence_decay = 0.0
                 else:
-                    influence_decay = 0.7 ** distance
+                    influence_decay = 0.5 ** distance
+                
+                # Opinion leader boost (matching compute_influenced_scores)
+                opinion_leader_boost = 1.0 + pr_values[j] * 0.5
                 
                 # Compute total influence contribution
-                influence_contribution = baseline_scores[j] * edge_weight * influence_decay * abs(multiplier)
+                influence_contribution = baseline_scores[j] * edge_weight * influence_decay * abs(multiplier) * opinion_leader_boost
                 
                 influence_contributions.append({
                     'employee_id': j,

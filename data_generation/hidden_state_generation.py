@@ -128,11 +128,44 @@ class OrganizationHiddenState:
             p = [0.4, 0.3, 0.2, 0.1] if level == 'Manager' else None
             department_assignments.append(np.random.choice(self.departments, p=p))
         
+        # Get organizational-level personality traits (used as means for individual variation)
+        org_sanction_salience = self.org_seed.get('sanction_salience', 0.5)
+        org_in_group_bias = self.org_seed.get('in_group_bias', 0.5)
+        
+        # Sample individual personality traits from beta distributions centered on org values
+        # Concentration parameter: higher = less variance (more similar to org mean)
+        # Lower = more variance (more individual differences)
+        concentration = 15.0  # Tune this to control variance (10-20 is reasonable)
+        
+        # Beta distribution: a = mean * concentration, b = (1 - mean) * concentration
+        # This ensures the mean of the distribution equals the org value
+        # Add small epsilon to ensure both parameters are > 0 (beta requires a > 0, b > 0)
+        epsilon = 0.01
+        
+        # Clamp org values to [epsilon, 1-epsilon] to avoid edge cases
+        org_sanction_salience_clamped = np.clip(org_sanction_salience, epsilon, 1 - epsilon)
+        org_in_group_bias_clamped = np.clip(org_in_group_bias, epsilon, 1 - epsilon)
+        
+        # Use positional arguments: beta(a, b, size)
+        individual_sanction_salience = np.random.beta(
+            org_sanction_salience_clamped * concentration,
+            (1 - org_sanction_salience_clamped) * concentration,
+            size=self.N
+        )
+        
+        individual_in_group_bias = np.random.beta(
+            org_in_group_bias_clamped * concentration,
+            (1 - org_in_group_bias_clamped) * concentration,
+            size=self.N
+        )
+        
         self.employees = pd.DataFrame({
             'employee_id': range(self.N),
             'level': employee_levels,
             'department': department_assignments,
-            'tenure': np.random.randint(1, 11, size=self.N)
+            'tenure': np.random.randint(1, 11, size=self.N),
+            'sanction_salience': individual_sanction_salience,
+            'in_group_bias': individual_in_group_bias
         })
         self.employees['manager_id'] = -1
 
