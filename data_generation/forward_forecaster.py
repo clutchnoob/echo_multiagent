@@ -128,10 +128,14 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
     # Get organizational context (for differentiation)
     power_distance = org_seed.get('power_distance', 0.5)
     industry = org_seed.get('industry', 'tech')
+    past_change_success = org_seed.get('past_change_success', 0.5)
     # Note: sanction_salience and in_group_bias are now per-employee (read from employee dict)
     # Fallback to org-level if not present (for backward compatibility)
     org_sanction_salience = org_seed.get('sanction_salience', 0.5)
     org_in_group_bias = org_seed.get('in_group_bias', 0.5)
+    
+    # Cynicism factor: history of failed change breeds cynicism
+    cynicism = 1.0 - past_change_success  # High success = low cynicism
     
     # Industry-specific risk profiles (affects baseline risk tolerance)
     industry_risk_profiles = {
@@ -180,6 +184,8 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         # Get individual personality traits (with fallback to org-level for backward compatibility)
         individual_sanction_salience = emp.get('sanction_salience', org_sanction_salience)
         individual_in_group_bias = emp.get('in_group_bias', org_in_group_bias)
+        individual_openness = emp.get('openness', 0.5) # Default to 0.5 if missing
+        individual_performance = emp.get('performance', 0.6) # Default to 0.6 if missing
         
         # Compute average conflict for this employee
         conflict_avg = 0.0
@@ -228,6 +234,17 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         level_risk_exposure = {'C-Suite': 1.0, 'Director': 0.7, 'Manager': 0.4}.get(level, 0.4)
         industry_mod = industry_risk_mod * level_risk_exposure
         
+        # Openness modifier: High openness increases baseline support
+        # Range: -0.1 to +0.1 around 0.5
+        openness_mod = (individual_openness - 0.5) * 0.2
+        
+        # Cynicism modifier: High cynicism reduces baseline support
+        # Range: -0.2 to 0.0
+        cynicism_mod = -0.2 * cynicism
+        
+        # Performance modifier: High performers are more independent (less affected by negative factors)
+        # They have "idiosyncrasy credits"
+        
         # Compute baseline score with more differentiation
         # Increased weights on individual factors, reduced global dominance
         baseline_scores[i] = (
@@ -236,6 +253,8 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
             (urgency_mod * 0.3) +  # NEW: Urgency effect
             (alignment_mod * 0.4) +  # NEW: Theta alignment effect
             (industry_mod) +  # NEW: Industry risk profile
+            openness_mod + # NEW: Individual openness
+            cynicism_mod + # NEW: Organizational cynicism
             -(conflict_avg * 0.4 * conflict_multiplier) +  # Increased from 0.2 to 0.4, with provocation multiplier
             (tenure * 0.15) +  # Increased from 0.05 to 0.15 (more individual variation)
             (dept_alignment * (1.0 + dept_cohesion)) +  # Department-domain alignment
@@ -305,11 +324,40 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
     for i in range(N):
         emp = employees[i] if i < len(employees) else {}
         individual_in_group_bias = emp.get('in_group_bias', org_in_group_bias)
+        individual_performance = emp.get('performance', 0.6)
+        
         # High in-group bias = more resistance (0.5 to 1.0 multiplier)
-        resistance_factors[i] = 0.5 + (1.0 - individual_in_group_bias) * 0.5
+        bias_resistance = 0.5 + (1.0 - individual_in_group_bias) * 0.5
+        
+        # High performance = more resistance (idiosyncrasy credits / independence)
+        # High performers (0.8+) get extra resistance boost
+        perf_resistance = 1.0
+        if individual_performance > 0.8:
+            perf_resistance = 0.8  # 20% more resistant
+        
+        resistance_factors[i] = bias_resistance * perf_resistance
     
     influenced_scores = baseline_scores.copy()
     total_influence = np.zeros(N)  # Track total influence received for normalization
+    
+    # Complex Contagion: Track count of strong supporters for thresholding
+    # Key: (target_id) -> count of strong influencers supporting
+    strong_support_counts = np.zeros(N)
+    strong_oppose_counts = np.zeros(N)
+    
+    # First pass: count strong ties' sentiments (approximate using baseline)
+    for i in range(N):
+        # Who influences i?
+        for j in range(N):
+            if i == j: continue
+            # Check if j is a "strong tie" (e.g., reports_to or close friend/collaborator)
+            is_strong_tie = False
+            if 'reports_to' in graphs and graphs['reports_to'][j][i] > 0: is_strong_tie = True
+            if 'friendship' in graphs and graphs['friendship'][j][i] == 1: is_strong_tie = True
+            
+            if is_strong_tie:
+                if baseline_scores[j] > 0.5: strong_support_counts[i] += 1
+                if baseline_scores[j] < -0.5: strong_oppose_counts[i] += 1
     
     # Graph types to process (in order of influence strength)
     graph_types = ['reports_to', 'influence', 'collaboration', 'friendship', 'conflict']
@@ -322,6 +370,14 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
         multiplier = graph_multipliers[graph_type]
         
         for i in range(N):
+            # Complex Contagion Threshold:
+            # If I'm neutral/opposed, I need multiple strong supporters to shift me positively
+            complex_contagion_dampener = 1.0
+            if baseline_scores[i] < 0.2: # If I'm not already supporting
+                 # If fewer than 2 strong supporters, dampen positive influence
+                if strong_support_counts[i] < 2:
+                    complex_contagion_dampener = 0.5
+            
             # For each influencer j (where graph[j][i] > 0, meaning j influences i)
             for j in range(N):
                 if i == j:
@@ -350,6 +406,10 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
                         multiplier * 
                         opinion_leader_boost
                     )
+                    
+                    # Apply complex contagion dampener if influence is positive
+                    if influence_contribution > 0:
+                        influence_contribution *= complex_contagion_dampener
                     
                     # Apply resistance factor (individuals resist influence based on personality)
                     influence_contribution *= resistance_factors[i]
@@ -428,9 +488,72 @@ def apply_constraints_and_rounding(probabilities: np.ndarray, hidden_state: dict
     graphs = hidden_state.get('graphs', {})
     conflict_graph = np.array(graphs.get('conflict', []))
     
+    # Get safety/visibility parameters
+    situation_seed = hidden_state.get('situation_seed', {})
+    sanction_strength = situation_seed.get('sanction_strength', 0.0)
+    visibility = situation_seed.get('visibility', 'private')
+    
     constrained_probs = probabilities.copy()
     
     for i in range(N):
+        emp = employees[i] if i < len(employees) else {}
+        individual_performance = emp.get('performance', 0.6)
+        tenure = emp.get('tenure', 0) / 10.0  # Normalize to 0-1
+        level = emp.get('level', 'Manager')
+        
+        # --- Public vs. Private Logic (Safety Score) ---
+        # Safety Score: How safe is it to express dissent?
+        # Factors:
+        # 1. Sanction Strength (High sanction = Low safety)
+        # 2. Visibility (Public = Low safety, Private = High safety)
+        # 3. Performance (High performance = Higher safety/status buffer) - CONTINUOUS
+        # 4. Tenure (Long tenure = More safety/established status)
+        # 5. Level (Higher level = More safety/authority)
+        
+        is_public = 1.0 if visibility == 'public' else 0.0
+        
+        # Base safety decreases with sanctions and visibility
+        base_safety = 1.0 - (sanction_strength * 0.6 + is_public * 0.4)
+        
+        # Continuous performance buffer (instead of binary)
+        # Range: -0.2 (low perf) to +0.2 (high perf), centered at 0.5 performance
+        performance_buffer = (individual_performance - 0.5) * 0.4
+        
+        # Tenure buffer: Long tenure provides protection (max +0.15 for 10 years)
+        tenure_buffer = tenure * 0.15
+        
+        # Level buffer: Higher levels have more safety/authority
+        level_buffer = {'C-Suite': 0.15, 'Director': 0.08, 'Manager': 0.0}.get(level, 0.0)
+        
+        # Combine all buffers
+        safety_score = base_safety + performance_buffer + tenure_buffer + level_buffer
+        safety_score = np.clip(safety_score, 0.0, 1.0)
+        
+        # Gradual suppression (instead of hard threshold)
+        # Suppression increases smoothly as safety decreases below 0.5
+        # At safety=0.5: no suppression
+        # At safety=0.0: maximum suppression (80% of oppose probability)
+        oppose_prob = constrained_probs[i, 0]
+        if oppose_prob > 0.05 and safety_score < 0.5:  # Only suppress if there's meaningful opposition
+            # Gradual suppression factor: 0 (at safety=0.5) to 1.0 (at safety=0.0)
+            suppression_factor = max(0, (0.5 - safety_score) / 0.5)  # Linear from 0.5 to 0.0
+            
+            # Maximum suppression: 80% of oppose probability (leave at least 20% or 0.05, whichever is higher)
+            max_suppression = oppose_prob * 0.8
+            min_oppose = max(0.05, oppose_prob * 0.2)
+            suppression_amount = max_suppression * suppression_factor
+            suppression_amount = min(suppression_amount, oppose_prob - min_oppose)
+            
+            if suppression_amount > 0.001:  # Only apply if meaningful
+                # Split suppression: 70% to Neutral (Silence), 30% to Support (Feigned Compliance)
+                to_neutral = suppression_amount * 0.7
+                to_support = suppression_amount * 0.3
+                
+                constrained_probs[i, 0] -= suppression_amount
+                constrained_probs[i, 1] += to_neutral
+                constrained_probs[i, 2] += to_support
+        
+        # --- Existing Conflict Constraint ---
         # Get conflict average for this employee
         conflict_avg = 0.0
         if conflict_graph.size > 0 and conflict_graph.shape[0] > i:

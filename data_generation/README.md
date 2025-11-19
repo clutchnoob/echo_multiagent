@@ -1,38 +1,60 @@
 # Data Generation Pipeline
 
-This directory contains the synthetic data generation pipeline for the ECHO multiagent learning project. The pipeline creates labeled training datasets by generating synthetic organizations and using LLMs to annotate sentiment propagation patterns.
+This directory contains the **agentic** synthetic data generation pipeline for the ECHO multiagent learning project. The pipeline creates labeled training datasets by generating synthetic organizations and using a **hybrid approach**: deterministic Python-based computation for sentiment forecasting, with LLM-generated rationales.
+
+## Architecture Overview
+
+The system uses an **agentic architecture** where:
+- **Python Functions**: Perform all deterministic calculations (baseline scores, graph influence propagation, softmax mapping, aggregation)
+- **LLM**: Generates qualitative rationales only, using pre-computed results as context
+- **Result**: Deterministic, heterogeneous probabilities that reflect actual graph structure and organizational dynamics
+
+This approach ensures reproducibility and eliminates the homogeneity issues of pure LLM-based forecasting.
 
 ## Directory Structure
 
 ```
 data_generation/
 ├── hidden_state_generation.py    # Organization modeling and graph generation
-├── encoder_layer.py              # Optional narrative synthesis
-├── forward_forecaster.py         # LLM-based label generation
+├── encoder_layer.py              # Narrative synthesis + scenario modifier extraction
+├── forward_forecaster.py         # Deterministic forecasting engine + LLM rationale
+├── visualize_results.py          # Analysis and visualization tools
 ├── pipeline_demo.ipynb           # Complete workflow demonstration
 ├── sample_hidden_states/         # Example synthetic organizations
 │   ├── demo_state.json
 │   └── sample_0.json
-└── sample_forecasts/             # Example labeled training data
-    └── demo_forecast.json
+├── sample_forecasts/             # Example labeled training data
+│   └── demo_forecast.json
+└── sample_encoder_input/         # Example narrative encodings
+    └── demo_encoded.json
 ```
 
 ## Module Overview
 
 ### 1. `hidden_state_generation.py`
 
-**Purpose**: Generates synthetic organizations with realistic multi-graph network structures.
+**Purpose**: Generates synthetic organizations with realistic multi-graph network structures and individual personality traits.
 
 **Key Components**:
 
 - **Seed Functions**: Sample random organizational, recommendation, and situational parameters
-  - `sample_org_seed()`: Industry, size, cultural parameters
-  - `sample_rec_seed()`: Recommendation domain, urgency, resource needs
-  - `sample_situation_seed()`: Current state, visibility, sanctions
+  - `sample_org_seed()`: Industry, size, cultural parameters (`power_distance`, `sanction_salience`, `in_group_bias`, `past_change_success`)
+  - `sample_rec_seed()`: Recommendation domain, urgency, resource needs, theta alignment
+  - `sample_situation_seed()`: Current state, visibility, sanctions, provocation flags
 
 - **`OrganizationHiddenState` Class**: Core organization generator
-  - Automatically generates employee roster across hierarchical levels
-  - Creates 5 weighted adjacency matrices (reports_to, collaboration, friendship, influence, conflict)
+  - Automatically generates employee roster across hierarchical levels (C-Suite, Director, Manager)
+  - Creates 5 weighted adjacency matrices:
+    - `reports_to`: Hierarchical reporting structure (binary)
+    - `collaboration`: Working relationships (weighted)
+    - `friendship`: Social bonds (binary, derived from collaboration)
+    - `influence`: Power networks using PageRank (weighted)
+    - `conflict`: Tensions and competition (weighted)
+  - **Individual Traits**: Each employee has:
+    - `sanction_salience`: Individual sensitivity to sanctions (Beta distribution around org mean)
+    - `in_group_bias`: Department loyalty (Beta distribution around org mean)
+    - `openness`: Receptivity to change (Beta distribution, mean=0.5)
+    - `performance`: Performance rating (Normal distribution, mean=0.6, std=0.2)
   - Exports to canonical JSON format
 
 **Example Usage**:
@@ -57,130 +79,129 @@ org = OrganizationHiddenState(
     avg_span_of_control=5
 )
 
+# Access employee roster with individual traits
+print(org.employees[['employee_id', 'level', 'department', 'performance', 'openness']])
+
 # Save to file
 with open('my_org.json', 'w') as f:
     f.write(org.to_json_encoding())
-
-# Visualize graphs
-org.visualize_graph('collaboration')
 ```
 
 **Key Methods**:
-- `_generate_roster()`: Distributes employees across levels and departments
+- `_generate_roster()`: Creates employees with individual personality traits
 - `_generate_reports_to_graph()`: Creates hierarchical reporting structure
 - `_generate_collaboration_graph()`: Models working relationships with edge weights
 - `_generate_friendship_graph()`: Derives social bonds from collaboration and demographics
 - `_generate_influence_graph()`: Computes power networks using PageRank
 - `_generate_conflict_graph()`: Identifies tensions based on competition and distance
 - `to_json_encoding()`: Exports complete state to JSON
-- `visualize_graph()`: Plots adjacency matrix heatmaps
-
-**Output Format**: JSON with organizational parameters, employee roster, and 5 adjacency matrices.
-
-**Run Standalone**:
-```bash
-python hidden_state_generation.py
-```
-This generates `sample_hidden_states/sample_0.json` and displays a visualization.
 
 ---
 
 ### 2. `encoder_layer.py`
 
-**Purpose**: Optional module that converts structured organizational JSON into natural language narratives using GPT-4o.
+**Purpose**: Converts structured organizational JSON into natural language narratives and extracts scenario-specific modifiers.
 
-**Key Function**:
-- `encode_hidden_state_to_text(file_path: str) -> str`: Takes a hidden state JSON file and returns a structured narrative summary
+**Key Functions**:
 
-**Output Structure** (JSON):
+- `create_encoded_narrative(hidden_state_data: dict) -> dict`: Main orchestration function
+  - Generates company story from organizational context
+  - Analyzes key relationships using graph structure
+  - Creates recommendation scenario narrative
+  - **Extracts scenario modifiers**: Uses LLM to extract `department_modifiers` and `level_modifiers` (numerical adjustments -0.3 to +0.3) based on narrative context
+  - Returns structured JSON with narrative text and numerical modifiers
+
+**Output Structure**:
 ```json
 {
-  "company_description": "Narrative about industry, size, culture...",
+  "company_story": "Narrative about industry, size, culture...",
+  "company_profile": "Structured company information...",
   "key_relationships": "Analysis of influencers, collaborations, conflicts...",
-  "recommendation_context": "Summary of the recommendation and its context..."
+  "recommendation_scenario": "Summary of the recommendation and its context...",
+  "scenario_modifiers": {
+    "department_modifiers": {"Engineering": 0.15, "Sales": -0.1, ...},
+    "level_modifiers": {"C-Suite": 0.0, "Director": 0.05, ...}
+  }
 }
 ```
 
 **Example Usage**:
 
 ```python
-from encoder_layer import encode_hidden_state_to_text
-
-# Generate narrative from hidden state
-narrative_json = encode_hidden_state_to_text('./sample_hidden_states/sample_0.json')
-
-# Parse and use
+from encoder_layer import create_encoded_narrative
 import json
-narrative = json.loads(narrative_json)
-print(narrative['company_description'])
+
+# Load hidden state
+with open('my_org.json', 'r') as f:
+    hidden_state = json.load(f)
+
+# Generate narrative with modifiers
+narrative_data = create_encoded_narrative(hidden_state)
+
+# The modifiers are fused into the forecasting computation
+# (see forward_forecaster.py for how they're used)
 ```
 
-**Requirements**:
-- OpenAI API key set in `.env` file
-- GPT-4o model access
-
-**Run Standalone**:
-```bash
-python encoder_layer.py
-```
-This reads `sample_hidden_states/sample_0.json` and generates `sample_encoder_input/sample_0_encoded.json`.
-
-**Note**: This is an optional preprocessing step. The main forecaster can work directly with the hidden state JSON.
+**Note**: The `scenario_modifiers` are extracted from the narrative but **not** included in the LLM prompt for rationale generation (to avoid data leakage). They are used only in the deterministic Python computation.
 
 ---
 
 ### 3. `forward_forecaster.py`
 
-**Purpose**: Core labeling module that uses GPT-4o with structured outputs to generate sentiment propagation labels for training data.
+**Purpose**: Core deterministic forecasting engine that computes sentiment propagation using graph theory and organizational psychology, with LLM-generated rationales.
 
-**Key Functions**:
+**Architecture**: 
+- **Deterministic Computation**: All probabilities computed in Python using NumPy/NetworkX
+- **LLM Integration**: GPT-4o-mini generates qualitative rationales from pre-computed results
+- **Reproducibility**: Temperature=0, deterministic seeds, state hashing
 
-- **`forecast_scenario(hidden_state, scenario_id, model, prompt_template_id, horizon, provider)`**
-  - Main label generation function
-  - Takes organizational hidden state as input
-  - Returns validated labeled training example
-  - Uses temperature=0 for deterministic outputs
+**Key Computational Functions**:
 
-- **`forecast_from_file(hidden_state_path, scenario_id, model, prompt_template_id, horizon)`**
-  - Convenience wrapper that loads JSON from file
-  - Automatically generates scenario_id from filename if not provided
+1. **`compute_baseline_scores(hidden_state, scenario_modifiers)`**
+   - Calculates initial sentiment scores for each employee
+   - Factors include:
+     - Individual traits: `openness`, `performance`, `sanction_salience`, `in_group_bias`
+     - Organizational context: `past_change_success` (cynicism), `industry` risk profiles
+     - Recommendation alignment: `theta_ideal - theta_current`
+     - Urgency, resource needs, conflict, tenure, department alignment
+   - Returns: Array of baseline scores (N,)
 
-- **`compute_state_hash(hidden_state)`**
-  - Generates SHA256 hash for reproducibility
-  - Uses canonical JSON serialization (sorted keys)
+2. **`compute_influenced_scores(baseline_scores, hidden_state, distance_cache)`**
+   - Applies graph-based influence propagation
+   - Features:
+     - **Complex Contagion**: Skeptics require multiple strong supporters to shift opinion
+     - **Opinion Leaders**: High PageRank employees have amplified influence (up to 1.5x)
+     - **Performance-based Resistance**: High performers resist peer pressure
+     - **Distance Decay**: Influence decays as `0.5^distance` in hierarchy
+     - **Normalization**: Prevents influence from overwhelming baseline
+   - Graph types: `reports_to`, `influence`, `collaboration`, `friendship`, `conflict`
+   - Returns: Array of influenced scores (N,)
 
-- **`validate_forecast(forecast)`**
-  - Validates output against JSON schema
-  - Checks probability normalization (sum to 1.0)
-  - Auto-corrects sentiment classes to match highest probability
+3. **`apply_softmax_mapping(influenced_scores, temperature=1.0)`**
+   - Maps continuous scores to probability distributions
+   - Three sentiment classes: `oppose`, `neutral`, `support`
+   - Returns: Array of probabilities (N, 3)
+
+4. **`apply_constraints_and_rounding(probabilities, hidden_state)`**
+   - **Public vs. Private Logic**: Implements "Organizational Silence"
+     - Calculates `safety_score` based on `sanction_strength`, `visibility`, `performance`, `tenure`, `level`
+     - **Gradual Suppression**: If `safety_score < 0.5`, suppresses "Oppose" probabilities
+     - Suppression increases smoothly from 0% (at safety=0.5) to 80% (at safety=0.0)
+     - Shifts suppressed probability to "Neutral" (silence) and "Support" (compliance)
+   - Business rules: Conflict-based constraints
+   - Returns: Normalized and rounded probabilities (N, 3)
+
+5. **`compute_individual_sentiments(hidden_state, narrative_context)`**
+   - Orchestrates the full computation pipeline
+   - Extracts `scenario_modifiers` from `narrative_context` and fuses into baseline
+   - Returns: List of individual sentiment dicts matching schema
+
+6. **`forecast_scenario(hidden_state, scenario_id, model, narrative_context, ...)`**
+   - Main entry point for generating forecasts
+   - Runs deterministic computation, then generates LLM rationale
+   - Returns: Complete forecast JSON with probabilities and rationale
 
 **Example Usage**:
-
-```python
-from forward_forecaster import forecast_from_file
-import json
-
-# Generate labeled example
-labeled_data = forecast_from_file(
-    hidden_state_path='./sample_hidden_states/sample_0.json',
-    scenario_id='training_example_1',
-    model='gpt-4o-mini',
-    horizon='decision'
-)
-
-# Save training data
-with open('labeled_example_1.json', 'w') as f:
-    json.dump(labeled_data, f, indent=2)
-
-# Access labels
-for employee_sentiment in labeled_data['individual_sentiments']:
-    emp_id = employee_sentiment['employee_id']
-    sentiment = employee_sentiment['sentiment']
-    probs = employee_sentiment['probabilities']
-    print(f"Employee {emp_id}: {sentiment} (confidence: {probs[sentiment]:.2f})")
-```
-
-**Advanced Usage** (direct API):
 
 ```python
 from forward_forecaster import forecast_scenario
@@ -190,110 +211,127 @@ import json
 with open('my_org.json', 'r') as f:
     hidden_state = json.load(f)
 
-# Generate labels with custom parameters
-labeled_data = forecast_scenario(
+# Optional: Load narrative context (includes scenario_modifiers)
+with open('narrative.json', 'r') as f:
+    narrative_context = json.load(f)
+
+# Generate forecast
+forecast = forecast_scenario(
     hidden_state=hidden_state,
-    scenario_id='custom_scenario',
-    model='gpt-4o-mini',  # or 'gpt-4o' for higher quality
-    prompt_template_id='v3',
-    horizon='decision',  # or 'next_cycle', 'quarter'
-    provider='openai'
+    scenario_id='demo_scenario',
+    model='gpt-4o-mini',
+    horizon='decision',
+    narrative_context=narrative_context  # Optional: fuses modifiers into computation
 )
+
+# Access results
+for sentiment in forecast['individual_sentiments']:
+    print(f"Employee {sentiment['employee_id']}: {sentiment['sentiment']} "
+          f"(prob: {sentiment['probabilities'][sentiment['sentiment']]:.2f})")
+
+print(f"Rationale: {forecast['rationale']}")
 ```
 
-**Label Output Structure**:
-
+**Output Structure**:
 ```json
 {
-  "scenario_id": "example_1",
+  "scenario_id": "demo_scenario",
   "state_hash": "sha256:...",
-  "generated_at": "2025-11-18T...",
+  "generated_at": "2025-11-19T...",
   "schema_version": "1.0",
   "horizon": "decision",
   "model": {
     "provider": "openai",
     "model": "gpt-4o-mini",
-    "temperature": 0,
-    "prompt_template_id": "v3"
+    "temperature": 0
   },
   "individual_sentiments": [
     {
       "employee_id": 0,
       "sentiment": "support",
       "probabilities": {
-        "oppose": 0.0,
-        "neutral": 0.0,
-        "support": 0.8,
-        "escalate": 0.2
+        "oppose": 0.191,
+        "neutral": 0.316,
+        "support": 0.493
       },
-      "influence_sources": [
-        {
-          "employee_id": 1,
-          "graph_type": "reports_to",
-          "influence_weight": 1.0
-        }
-      ],
+      "influence_sources": [...],
       "propagation_path": [0]
     }
   ],
   "aggregate_outcomes": {
-    "probabilities": {
-      "oppose": 0.045,
-      "neutral": 0.136,
-      "support": 0.727,
-      "escalate": 0.091
-    },
+    "probabilities": {"oppose": 0.083, "neutral": 0.216, "support": 0.510},
     "top_class": "support"
   },
   "segments": {
     "by_department": {...},
     "by_level": {...}
   },
-  "rationale": "...",
+  "rationale": "LLM-generated explanation of the results...",
   "features_importance": [...]
 }
 ```
 
-**Validation & Error Handling**:
-- Automatic retry with exponential backoff (3 attempts)
-- Rate limit detection and graceful waiting
-- Probability normalization and validation
-- Schema validation with detailed error messages
-- State hash for reproducibility tracking
-
-**Run Standalone**:
-```bash
-python forward_forecaster.py
-```
-This generates labels for `sample_hidden_states/sample_0.json` and saves to `sample_forecasts/sample_0_forecast.json`.
+**Key Features**:
+- **Deterministic**: Same inputs → same outputs (reproducible)
+- **Heterogeneous**: Probabilities reflect actual graph structure and individual differences
+- **Realistic**: Models complex contagion, organizational silence, opinion leaders
+- **Validated**: Automatic schema validation and probability normalization
 
 ---
 
-### 4. `pipeline_demo.ipynb`
+### 4. `visualize_results.py`
+
+**Purpose**: Analysis and visualization tools for understanding forecast dynamics.
+
+**Key Functions**:
+
+- **`analyze_public_private_divergence(hidden_state, forecast)`**
+  - Creates scatter plots showing the gap between psychological safety and public expression
+  - **Left Plot**: Safety Score vs. Public Opposition (shows suppression effect)
+  - **Right Plot**: Safety Score vs. Public Compliance (shows silence/compliance)
+  - Identifies "silenced" employees (low safety + high compliance)
+  - Point size represents `performance` rating
+  - Returns: DataFrame with analysis data
+
+- **`plot_influence_network(hidden_state, forecast)`**
+  - Visualizes organizational hierarchy as a top-down tree
+  - **Layout**: C-Suite (top) → Directors (middle) → Managers (bottom)
+  - **Node Colors**: Green=Support, Red=Oppose, Grey=Neutral
+  - **Edge Colors**: Colored by source node's sentiment (shows influence flow)
+  - **Labels**: Employee ID and department abbreviation
+  - Shows how sentiment propagates through the hierarchy
+
+**Example Usage**:
+
+```python
+from visualize_results import analyze_public_private_divergence, plot_influence_network
+
+# Analyze safety vs. expression
+df_analysis = analyze_public_private_divergence(hidden_state, forecast)
+
+# Visualize network
+plot_influence_network(hidden_state, forecast)
+```
+
+---
+
+### 5. `pipeline_demo.ipynb`
 
 **Purpose**: Interactive Jupyter notebook demonstrating the complete data generation workflow.
 
 **Sections**:
 1. **Setup**: Import libraries and configure environment
-2. **Stage 1**: Generate synthetic organization with custom parameters
-3. **Stage 2**: (Optional) Generate narrative encoding
-4. **Stage 3**: Generate labeled training examples
-5. **Analysis**: Visualize and interpret generated labels
-6. **Validation**: Check label quality and consistency
+2. **Generate Hidden State**: Create synthetic organization with custom parameters
+3. **Encode Narrative (Optional)**: Generate narrative context and scenario modifiers
+4. **Generate Forecast**: Run deterministic computation with LLM rationale
+5. **Analyze & Visualize**: Explore Public vs. Private sentiment gaps and influence networks
 
 **How to Use**:
 ```bash
 jupyter notebook pipeline_demo.ipynb
 ```
 
-Then run cells sequentially to see the complete pipeline in action.
-
-**What It Demonstrates**:
-- How to customize organizational parameters
-- Graph structure visualization
-- LLM label generation process
-- Label interpretation and validation
-- Complete training example creation
+Run cells sequentially to see the complete pipeline in action.
 
 ---
 
@@ -302,14 +340,14 @@ Then run cells sequentially to see the complete pipeline in action.
 ### 1. Install Dependencies
 
 ```bash
-pip install openai numpy pandas networkx matplotlib seaborn python-dotenv jsonschema jupyter
+pip install openai numpy pandas networkx matplotlib seaborn python-dotenv jsonschema scipy jupyter
 ```
 
 ### 2. Set Up API Key
 
 Create a `.env` file in the project root:
 ```bash
-echo "OPENAI_API_KEY=your-api-key-here" > ../.env
+echo "OPENAI_API_KEY=your-api-key-here" > .env
 ```
 
 ### 3. Generate Training Data
@@ -323,6 +361,7 @@ jupyter notebook pipeline_demo.ipynb
 ```python
 from hidden_state_generation import *
 from forward_forecaster import forecast_scenario
+from encoder_layer import create_encoded_narrative
 import json
 
 # Generate organization
@@ -333,11 +372,15 @@ org = OrganizationHiddenState(
 )
 hidden_state = json.loads(org.to_json_encoding())
 
-# Generate labels
+# Optional: Generate narrative
+narrative = create_encoded_narrative(hidden_state)
+
+# Generate forecast (deterministic computation + LLM rationale)
 labeled_data = forecast_scenario(
     hidden_state=hidden_state,
     scenario_id='train_001',
-    model='gpt-4o-mini'
+    model='gpt-4o-mini',
+    narrative_context=narrative  # Optional: fuses modifiers
 )
 
 # Save
@@ -345,14 +388,36 @@ with open('training_data/example_001.json', 'w') as f:
     json.dump(labeled_data, f, indent=2)
 ```
 
-**Option C: Run standalone scripts**
-```bash
-# Generate organization
-python hidden_state_generation.py
+---
 
-# Generate labels
-python forward_forecaster.py
-```
+## Key Features & Capabilities
+
+### Organizational Psychology Modeling
+
+- **Individual Heterogeneity**: Each employee has unique `openness`, `performance`, `sanction_salience`, `in_group_bias` (sampled from distributions)
+- **Organizational Cynicism**: `past_change_success` creates global resistance to change
+- **Industry Risk Profiles**: Different industries have different baseline risk tolerance
+- **Theta Alignment**: Measures how well recommendations align with current state
+
+### Social Influence Dynamics
+
+- **Complex Contagion**: Skeptics require multiple strong supporters (threshold model)
+- **Opinion Leaders**: High PageRank employees have amplified influence
+- **Performance-based Resistance**: High performers resist peer pressure (idiosyncrasy credits)
+- **Distance Decay**: Influence weakens with hierarchical distance (`0.5^distance`)
+
+### Public vs. Private Sentiment
+
+- **Safety Score**: Calculated from `sanction_strength`, `visibility`, `performance`, `tenure`, `level`
+- **Gradual Suppression**: Smooth transition from no suppression (safety=0.5) to maximum suppression (safety=0.0)
+- **Organizational Silence**: Low-safety employees suppress "Oppose" → appear "Neutral" or "Support"
+- **Compliance Modeling**: Distinguishes between genuine support and feigned compliance
+
+### Computational Fusion
+
+- **Narrative Modifiers**: LLM-extracted `department_modifiers` and `level_modifiers` are fused into baseline computation
+- **No Data Leakage**: Numerical modifiers are excluded from LLM rationale prompts
+- **Hybrid Approach**: Best of both worlds (deterministic computation + narrative context)
 
 ---
 
@@ -371,8 +436,15 @@ python forward_forecaster.py
 
 **Cultural Parameters** (0-1 continuous):
 - `power_distance`: Hierarchy acceptance (high = more top-down influence)
-- `sanction_salience`: Fear of negative consequences (high = more risk-averse)
+- `sanction_salience`: Organizational fear of negative consequences (high = more risk-averse)
 - `in_group_bias`: Department loyalty (high = more within-group clustering)
+- `past_change_success`: Historical change success rate (low = high cynicism)
+
+**Individual Employee Traits** (sampled per employee):
+- `sanction_salience`: Individual sensitivity (Beta distribution around org mean)
+- `in_group_bias`: Individual department loyalty (Beta distribution around org mean)
+- `openness`: Receptivity to change (Beta distribution, mean=0.5)
+- `performance`: Performance rating (Normal distribution, mean=0.6, std=0.2)
 
 ### Recommendation Parameters
 
@@ -387,14 +459,14 @@ python forward_forecaster.py
 ### Situation Parameters
 
 - `theta_current`: Current organizational position (0-1)
-- `visibility`: Information transparency (`private`, `public`, `confidential`)
+- `visibility`: Information transparency (`private`, `public`)
 - `sanction_strength`: Consequence severity (0-1)
 - `provocation_flag`: Recent destabilizing events (0 or 1)
 
 ### Model Parameters
 
 **Models**:
-- `gpt-4o-mini`: Faster, cheaper, good quality
+- `gpt-4o-mini`: Faster, cheaper, good quality (recommended for bulk generation)
 - `gpt-4o`: Higher quality, more expensive
 
 **Horizons**:
@@ -416,7 +488,8 @@ python forward_forecaster.py
     "size": "large",
     "power_distance": 0.054,
     "sanction_salience": 0.220,
-    "in_group_bias": 0.184
+    "in_group_bias": 0.184,
+    "past_change_success": 0.623
   },
   "rec_seed": {
     "domain": "budget",
@@ -436,9 +509,12 @@ python forward_forecaster.py
       "level": "C-Suite",
       "department": "Engineering",
       "tenure": 3,
+      "sanction_salience": 0.966,
+      "in_group_bias": 0.291,
+      "openness": 0.523,
+      "performance": 0.742,
       "manager_id": -1
-    },
-    ...
+    }
   ],
   "graphs": {
     "reports_to": [[N×N binary matrix]],
@@ -450,15 +526,15 @@ python forward_forecaster.py
 }
 ```
 
-### Labeled Training Example Structure
+### Forecast JSON Structure
 
-See the `forward_forecaster.py` section above for the complete structure.
-
-**Key Fields for Training**:
-- `individual_sentiments`: Individual-level labels for each employee
-- `influence_sources`: Ground-truth influence network edges
-- `propagation_path`: Sentiment flow sequence
+See the `forward_forecaster.py` section above for complete structure. Key fields:
+- `individual_sentiments`: Individual-level labels with probabilities
+- `influence_sources`: Top influencers for each employee
+- `propagation_path`: Sentiment flow sequence from leadership
 - `aggregate_outcomes`: Organization-wide label distribution
+- `rationale`: LLM-generated explanation
+- `features_importance`: Correlation-based feature analysis
 
 ---
 
@@ -472,35 +548,29 @@ Error: OpenAI API key not found after loading .env
 ```
 **Solution**: Create a `.env` file in the project root with your API key:
 ```bash
-echo "OPENAI_API_KEY=sk-..." > ../.env
+echo "OPENAI_API_KEY=sk-..." > .env
 ```
 
-**2. Rate Limit Errors**
-```
-Error: Rate limit exceeded
-```
-**Solution**: The forecaster automatically retries with exponential backoff. Wait a few minutes or upgrade your OpenAI plan.
-
-**3. Import Errors**
+**2. Import Errors**
 ```
 ModuleNotFoundError: No module named 'networkx'
 ```
 **Solution**: Install missing dependencies:
 ```bash
-pip install networkx pandas numpy matplotlib seaborn openai python-dotenv jsonschema
+pip install networkx pandas numpy matplotlib seaborn openai python-dotenv jsonschema scipy
 ```
 
-**4. Validation Errors**
+**3. Validation Errors**
 ```
-Validation failed: Individual sentiment probabilities sum to 0.998, not 1.0
+Validation failed: Rationale too long
 ```
-**Solution**: This is auto-corrected by the validation system. If errors persist, check the `warnings` field in the output.
+**Solution**: The system automatically truncates long rationales. Check the `warnings` field in output.
 
-**5. Empty Graphs**
-```
-Organization has 0 employees
-```
-**Solution**: Check your seed parameters. Ensure `size_id` is between 0-3.
+**4. Low Variance in Probabilities**
+If you see homogeneous probabilities, check:
+- Are individual traits (`openness`, `performance`) being generated correctly?
+- Is the influence propagation too strong? (Try reducing graph multipliers)
+- Is the baseline score formula too dominated by global factors?
 
 ---
 
@@ -520,6 +590,7 @@ Organization has 0 employees
 import json
 from hidden_state_generation import *
 from forward_forecaster import forecast_scenario
+from encoder_layer import create_encoded_narrative
 
 # Generate 100 diverse training examples
 training_data = []
@@ -532,11 +603,15 @@ for i in range(100):
     )
     hidden_state = json.loads(org.to_json_encoding())
     
-    # Generate labels
+    # Optional: Generate narrative
+    narrative = create_encoded_narrative(hidden_state)
+    
+    # Generate labels (deterministic computation)
     labeled = forecast_scenario(
         hidden_state=hidden_state,
         scenario_id=f'train_{i:04d}',
-        model='gpt-4o-mini'
+        model='gpt-4o-mini',
+        narrative_context=narrative
     )
     
     # Save
@@ -555,28 +630,29 @@ with open('training_dataset.json', 'w') as f:
 ### Generation Speed
 
 - **Organization Generation**: ~0.1 seconds per organization
-- **LLM Labeling**: ~5-30 seconds per example (depends on model and organization size)
-  - `gpt-4o-mini`: ~5-10 seconds
-  - `gpt-4o`: ~15-30 seconds
+- **Narrative Encoding**: ~10-20 seconds (LLM calls)
+- **Forecast Computation**: ~0.1 seconds (deterministic Python)
+- **LLM Rationale Generation**: ~2-5 seconds (gpt-4o-mini)
+- **Total per example**: ~12-25 seconds
 
 ### Cost Estimates (OpenAI API)
 
 For a 20-employee organization:
-- **Input tokens**: ~4,000 tokens (hidden state + prompt)
-- **Output tokens**: ~2,000 tokens (labels)
+- **Narrative Encoding**: ~3,000 input tokens, ~1,500 output tokens
+- **Rationale Generation**: ~4,000 input tokens, ~500 output tokens
 
 **Cost per example** (approximate):
-- `gpt-4o-mini`: $0.002 - $0.005
-- `gpt-4o`: $0.03 - $0.06
+- `gpt-4o-mini`: $0.003 - $0.006
+- `gpt-4o`: $0.04 - $0.08
 
 **For 1,000 training examples**:
-- `gpt-4o-mini`: $2-5
-- `gpt-4o`: $30-60
+- `gpt-4o-mini`: $3-6
+- `gpt-4o`: $40-80
 
 ### Optimization Tips
 
 1. Use `gpt-4o-mini` for bulk generation
-2. Use `gpt-4o` for validation examples
+2. Skip narrative encoding if you don't need scenario modifiers
 3. Cache generated states and reuse for different recommendations
 4. Parallelize generation across multiple API keys (if available)
 5. Use smaller organizations (10-15 employees) for faster iteration
@@ -592,30 +668,32 @@ For a 20-employee organization:
 - JSON output uses 2-space indentation
 - Random seeds for reproducibility
 
+### Key Design Decisions
+
+1. **Agentic Architecture**: Computation in Python, LLM for rationale only
+2. **Individual Heterogeneity**: Beta/Normal distributions for personality traits
+3. **Complex Contagion**: Threshold model prevents unrealistic cascades
+4. **Gradual Suppression**: Smooth safety-based suppression (not binary)
+5. **Computational Fusion**: Narrative modifiers fused into computation, not LLM prompt
+
 ### Testing
 
-Currently no automated tests. Manual validation includes:
+Manual validation includes:
 - Schema validation against `FORECAST_SCHEMA`
 - Probability sum checks (must equal 1.0)
 - Graph symmetry checks (undirected graphs)
 - Hash consistency checks
-
-### Future Improvements
-
-- [ ] Add unit tests for graph generation
-- [ ] Implement parallel batch generation
-- [ ] Add label quality metrics
-- [ ] Create visualization tools for training data
-- [ ] Support for larger organizations (100+ employees)
-- [ ] Dynamic graph generation (temporal evolution)
+- Safety score variance checks
 
 ---
 
 ## References
 
-- **NetworkX**: Graph analysis library used for influence computation
+- **NetworkX**: Graph analysis library used for influence computation and PageRank
 - **OpenAI Structured Outputs**: [Documentation](https://platform.openai.com/docs/guides/structured-outputs)
 - **JSON Schema**: [Specification](https://json-schema.org/)
+- **Complex Contagion**: Centola & Macy (2007) - "Complex Contagions and the Weakness of Long Ties"
+- **Organizational Silence**: Morrison & Milliken (2000) - "Organizational Silence: A Barrier to Change"
 
 ---
 
@@ -625,6 +703,6 @@ For issues related to the data generation pipeline, please check:
 1. This README for common solutions
 2. Example notebooks in `pipeline_demo.ipynb`
 3. Sample outputs in `sample_forecasts/` and `sample_hidden_states/`
+4. Implementation plan in `AGENTIC_IMPLEMENTATION_PLAN.md`
 
 For project-level questions, see the main `README.md` in the project root.
-

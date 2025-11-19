@@ -20,7 +20,8 @@ def sample_org_seed(seed: Optional[int] = None) -> dict:
         "size_id": int(rng.integers(0, len(SIZES))),
         "power_distance": float(rng.random()),
         "sanction_salience": float(rng.random()),
-        "in_group_bias": float(rng.random())
+        "in_group_bias": float(rng.random()),
+        "past_change_success": float(rng.random())  # 0.0 (total failure) to 1.0 (total success)
     }
 
 def sample_rec_seed(seed: Optional[int] = None) -> dict:
@@ -159,13 +160,25 @@ class OrganizationHiddenState:
             size=self.N
         )
         
+        # New: Openness to experience (receptivity to change)
+        # High openness = easier to influence, lower resistance
+        individual_openness = np.random.beta(5, 5, size=self.N)  # Centered around 0.5
+        
+        # New: Performance Rating (High/Avg/Low) - approximated by 0.0-1.0
+        # Used for idiosyncrasy credits (resistance to peer pressure)
+        # Normal distribution clipped to [0,1]
+        performance_raw = np.random.normal(0.6, 0.2, size=self.N)
+        individual_performance = np.clip(performance_raw, 0.0, 1.0)
+        
         self.employees = pd.DataFrame({
             'employee_id': range(self.N),
             'level': employee_levels,
             'department': department_assignments,
             'tenure': np.random.randint(1, 11, size=self.N),
             'sanction_salience': individual_sanction_salience,
-            'in_group_bias': individual_in_group_bias
+            'in_group_bias': individual_in_group_bias,
+            'openness': individual_openness,
+            'performance': individual_performance
         })
         self.employees['manager_id'] = -1
 
