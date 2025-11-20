@@ -177,8 +177,12 @@ narrative_data = create_encoded_narrative(hidden_state)
    - Graph types: `reports_to`, `influence`, `collaboration`, `friendship`, `conflict`
    - Returns: Array of influenced scores (N,)
 
-3. **`apply_softmax_mapping(influenced_scores, temperature=1.0)`**
-   - Maps continuous scores to probability distributions
+3. **`apply_softmax_mapping(influenced_scores, hidden_state, base_temperature=1.0)`**
+   - Maps continuous scores to probability distributions using level-dependent temperature
+   - **Level-Based Variance**: Higher levels have more variance (strong opinions, disagreement)
+     - C-Suite: temperature = 1.8x (high variance - executives have divergent opinions)
+     - Directors: temperature = 1.3x (medium-high variance - VPs disagree)
+     - Managers: temperature = 0.6x (low variance - lower levels are more uniform/neutral)
    - Three sentiment classes: `oppose`, `neutral`, `support`
    - Returns: Array of probabilities (N, 3)
 
@@ -262,6 +266,7 @@ print(f"Rationale: {forecast['rationale']}")
     "probabilities": {"oppose": 0.083, "neutral": 0.216, "support": 0.510},
     "top_class": "support"
   },
+  "note": "aggregate_outcomes reflects CEO's sentiment, not company average",
   "segments": {
     "by_department": {...},
     "by_level": {...}
@@ -397,7 +402,12 @@ with open('training_data/example_001.json', 'w') as f:
 - **Individual Heterogeneity**: Each employee has unique `openness`, `performance`, `sanction_salience`, `in_group_bias` (sampled from distributions)
 - **Organizational Cynicism**: `past_change_success` creates global resistance to change
 - **Industry Risk Profiles**: Different industries have different baseline risk tolerance
-- **Theta Alignment**: Measures how well recommendations align with current state
+- **Theta Alignment** (Research-Based Asymmetric Model):
+  - **Loss Aversion** (Kahneman & Tversky): Misalignment weighted 2.7x stronger than alignment (0.8 vs 0.3)
+  - **Tribal Amplification** (Social Identity Theory): High `in_group_bias` amplifies resistance to misalignment by up to 1.5x
+  - **Hierarchical Resistance**: Managers show strongest resistance (1.3x), Directors moderate (1.1x), C-Suite least (0.9x)
+  - **Tenure Sunk Costs**: Long-tenured employees more invested in status quo (up to 1.4x for 10 years)
+  - **Urgency Dampening**: Time pressure has diminishing returns when proposals conflict with core beliefs
 
 ### Social Influence Dynamics
 
@@ -405,6 +415,11 @@ with open('training_data/example_001.json', 'w') as f:
 - **Opinion Leaders**: High PageRank employees have amplified influence
 - **Performance-based Resistance**: High performers resist peer pressure (idiosyncrasy credits)
 - **Distance Decay**: Influence weakens with hierarchical distance (`0.5^distance`)
+- **Symmetric Softmax Mapping**: No built-in bias toward support; opposition and support are equally likely for neutral scores (reflects research on status quo stability)
+- **Level-Dependent Variance**: Organizational hierarchy affects opinion variance
+  - **C-Suite** (temperature=1.8x): High variance - executives have strong, divergent opinions (VPs disagree a lot)
+  - **Directors** (temperature=1.3x): Medium-high variance - some disagreement among VPs
+  - **Managers** (temperature=0.6x): Low variance - lower levels are more uniform and less opinionated on strategic matters
 
 ### Public vs. Private Sentiment
 

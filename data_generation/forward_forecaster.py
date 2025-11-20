@@ -217,15 +217,55 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         # Higher urgency = more support for change (but individual personality modulates)
         urgency_mod = urgency * (0.3 + individual_sanction_salience * 0.2)  # Range: 0.3*urgency to 0.5*urgency
         
-        # Theta alignment: measures how well recommendation aligns with current state
-        # Individual variation: people with high in_group_bias resist misalignment more
-        alignment_mod = theta_alignment * (1.0 - individual_in_group_bias * 0.5)  # High in-group = less responsive to alignment
+        # ========================================================================
+        # THETA ALIGNMENT: Research-based asymmetric weighting
+        # Based on Loss Aversion (Kahneman & Tversky), Social Identity Theory (Tajfel & Turner),
+        # and organizational hierarchy/tenure effects
+        # ========================================================================
+        
+        # 1. Asymmetric loss aversion: Losses loom 2-3x larger than gains
+        if theta_alignment < 0:  # Misaligned = moving away from current state
+            base_alignment_weight = 0.8  # Strong negative effect (loss aversion)
+        else:  # Aligned = moving toward ideal
+            base_alignment_weight = 0.3  # Weaker positive effect (gains less motivating)
+        
+        # 2. Tribal amplification: High in-group bias AMPLIFIES resistance to misalignment
+        # (Fixes previous backwards logic - tribalism defends "our way")
+        if theta_alignment < 0:  # Misaligned
+            tribal_amplifier = 1.0 + individual_in_group_bias * 0.5  # 1.0 to 1.5x resistance
+        else:  # Aligned
+            tribal_amplifier = 1.0 - individual_in_group_bias * 0.2  # 0.8 to 1.0x (slightly dampened)
+        
+        # 3. Hierarchical resistance: Lower levels are more conformist/resistant
+        level_resistance_map = {
+            'Manager': 1.3,     # Most resistant (least agency, most conformist)
+            'Director': 1.1,    # Moderately resistant
+            'C-Suite': 0.9      # Slightly less resistant (strategic flexibility)
+        }
+        if theta_alignment < 0:
+            level_resistance_mult = level_resistance_map.get(level, 1.0)
+        else:
+            level_resistance_mult = 1.0
+        
+        # 4. Tenure sunk costs: Longer tenure = more invested in current state
+        if theta_alignment < 0:  # Misaligned
+            tenure_resistance_mult = 1.0 + tenure * 0.4  # Up to 1.4x for 10 years tenure
+        else:
+            tenure_resistance_mult = 1.0
+        
+        # Combine all alignment effects
+        alignment_mod = (theta_alignment * base_alignment_weight * 
+                        tribal_amplifier * level_resistance_mult * tenure_resistance_mult)
+        
+        # 5. Urgency dampening: Time pressure doesn't override core belief conflicts
+        if theta_alignment < -0.3:  # Strong misalignment
+            urgency_mod *= 0.5  # Urgency has diminishing returns
         
         # Provocation flag: creates polarization (increases conflict effects)
         # When provoked, conflict has stronger negative impact, and alignment matters less
         if provocation_flag:
             conflict_multiplier = 1.5  # Amplify conflict effects
-            alignment_mod *= 0.5  # Reduce alignment impact when provoked
+            alignment_mod *= 0.5  # Reduce alignment impact when provoked (external shock)
         else:
             conflict_multiplier = 1.0
         
@@ -250,11 +290,11 @@ def compute_baseline_scores(hidden_state: dict, scenario_modifiers: Optional[dic
         baseline_scores[i] = (
             (resource_need * 0.2) +  # Reduced from 0.3 to 0.2 (less global dominance)
             (effective_sanction * visibility_factor * 0.8) +  # Slightly reduced
-            (urgency_mod * 0.3) +  # NEW: Urgency effect
-            (alignment_mod * 0.4) +  # NEW: Theta alignment effect
-            (industry_mod) +  # NEW: Industry risk profile
-            openness_mod + # NEW: Individual openness
-            cynicism_mod + # NEW: Organizational cynicism
+            (urgency_mod * 0.3) +  # Urgency effect (dampened when misaligned)
+            alignment_mod +  # Theta alignment effect (now amplified by research-based factors, no extra weight needed)
+            (industry_mod) +  # Industry risk profile
+            openness_mod + # Individual openness
+            cynicism_mod + # Organizational cynicism
             -(conflict_avg * 0.4 * conflict_multiplier) +  # Increased from 0.2 to 0.4, with provocation multiplier
             (tenure * 0.15) +  # Increased from 0.05 to 0.15 (more individual variation)
             (dept_alignment * (1.0 + dept_cohesion)) +  # Department-domain alignment
@@ -432,27 +472,47 @@ def compute_influenced_scores(baseline_scores: np.ndarray, hidden_state: dict, d
     return influenced_scores
 
 
-def apply_softmax_mapping(influenced_scores: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+def apply_softmax_mapping(influenced_scores: np.ndarray, hidden_state: dict, base_temperature: float = 1.0) -> np.ndarray:
     """
-    Map influenced scores to sentiment probabilities using softmax.
+    Map influenced scores to sentiment probabilities using softmax with level-dependent temperature.
+    
+    Higher levels (C-Suite/Directors) have higher temperature = more variance (strong opinions, disagreement)
+    Lower levels (Managers) have lower temperature = less variance (more uniform, less opinionated)
     
     Args:
         influenced_scores: Array of influenced scores, shape (N,)
-        temperature: Softmax temperature (default 0.5)
+        hidden_state: Organizational hidden state dictionary (to get employee levels)
+        base_temperature: Base temperature (default 1.0), adjusted by level
         
     Returns:
         Array of probabilities, shape (N, 3) where columns are [oppose, neutral, support]
     """
     N = len(influenced_scores)
+    employees = hidden_state.get('employees', [])
     probabilities = np.zeros((N, 3))
+    
+    # Level-based temperature multipliers
+    # Higher levels = more variance (VPs disagree a lot)
+    # Lower levels = less variance (grunts aren't that opinionated)
+    level_temperature_multipliers = {
+        'C-Suite': 1.8,      # High variance - executives have strong, divergent opinions
+        'Director': 1.3,     # Medium-high variance - VPs disagree
+        'Manager': 0.6        # Low variance - lower levels are more uniform/neutral
+    }
     
     for i in range(N):
         score = influenced_scores[i]
         
-        # Map to logits
-        oppose_logit = -score * 0.5
-        neutral_logit = score * 0.3
-        support_logit = score * 1.0
+        # Get level-based temperature
+        emp = employees[i] if i < len(employees) else {}
+        level = emp.get('level', 'Manager')
+        temp_multiplier = level_temperature_multipliers.get(level, 0.8)  # Default to 0.8 for unknown levels
+        temperature = base_temperature * temp_multiplier
+        
+        # Map to logits (symmetric to avoid built-in bias)
+        oppose_logit = -score * 1.0  # Symmetric with support
+        neutral_logit = 0.0           # True neutral baseline
+        support_logit = score * 1.0   # Symmetric with oppose
         
         logits = np.array([oppose_logit, neutral_logit, support_logit])
         
@@ -853,40 +913,54 @@ def compute_level_aggregates(probabilities: np.ndarray, hidden_state: dict) -> D
     return aggregates
 
 
-def compute_aggregate_outcomes(probabilities: np.ndarray) -> Dict[str, Any]:
+def compute_aggregate_outcomes(probabilities: np.ndarray, hidden_state: dict) -> Dict[str, Any]:
     """
-    Compute aggregate outcomes across all employees.
+    Compute aggregate outcomes based on CEO's sentiment (not company average).
     
     Args:
         probabilities: Array of probabilities, shape (N, 3) [oppose, neutral, support]
+        hidden_state: Organizational hidden state dictionary (to find CEO)
         
     Returns:
-        Dictionary with probabilities and top_class
+        Dictionary with probabilities and top_class based on CEO's sentiment
     """
-    # Simple average across all employees
-    agg_probs = np.mean(probabilities, axis=0)
+    employees = hidden_state.get('employees', [])
+    
+    # Find CEO (C-Suite employee, typically employee_id 0 or first C-Suite)
+    ceo_id = None
+    for i, emp in enumerate(employees):
+        if emp.get('level') == 'C-Suite':
+            ceo_id = i
+            break
+    
+    # Fallback: if no C-Suite found, use employee 0
+    if ceo_id is None:
+        ceo_id = 0
+    
+    # Use CEO's probabilities (not average)
+    ceo_probs = probabilities[ceo_id].copy()
     
     # Round
-    agg_probs = np.round(agg_probs, 3)
+    ceo_probs = np.round(ceo_probs, 3)
     
     # Ensure sum = 1.0
-    prob_sum = np.sum(agg_probs)
+    prob_sum = np.sum(ceo_probs)
     if not np.isclose(prob_sum, 1.0, atol=1e-6):
         diff = 1.0 - prob_sum
-        max_idx = np.argmax(agg_probs)
-        agg_probs[max_idx] += diff
-        agg_probs[max_idx] = np.round(agg_probs[max_idx], 3)
+        max_idx = np.argmax(ceo_probs)
+        ceo_probs[max_idx] += diff
+        ceo_probs[max_idx] = np.round(ceo_probs[max_idx], 3)
     
     # Find top class
     sentiment_classes = ['oppose', 'neutral', 'support']
-    top_class_idx = np.argmax(agg_probs)
+    top_class_idx = np.argmax(ceo_probs)
     top_class = sentiment_classes[top_class_idx]
     
     return {
         'probabilities': {
-            'oppose': float(agg_probs[0]),
-            'neutral': float(agg_probs[1]),
-            'support': float(agg_probs[2])
+            'oppose': float(ceo_probs[0]),
+            'neutral': float(ceo_probs[1]),
+            'support': float(ceo_probs[2])
         },
         'top_class': top_class
     }
@@ -1009,8 +1083,8 @@ def compute_individual_sentiments(hidden_state: dict, narrative_context: Optiona
     # Step 3: Compute influenced scores
     influenced_scores = compute_influenced_scores(baseline_scores, hidden_state, distance_cache)
     
-    # Step 4: Apply softmax
-    probabilities = apply_softmax_mapping(influenced_scores, temperature=1.0)
+    # Step 4: Apply softmax with level-dependent temperature
+    probabilities = apply_softmax_mapping(influenced_scores, hidden_state, base_temperature=1.0)
     
     # Step 5: Apply constraints and rounding
     probabilities = apply_constraints_and_rounding(probabilities, hidden_state)
@@ -1193,7 +1267,10 @@ The probabilities have been computed using:
 - Graph-based influence propagation through reports_to, collaboration, friendship, and influence networks
 - Softmax mapping with temperature=1.0
 
+IMPORTANT: The final decision (top_class) reflects the CEO's sentiment, not the company average. The CEO's probabilities determine the organizational outcome.
+
 Focus on:
+- The CEO's decision and key factors that influenced it
 - Key patterns in the results (e.g., "Engineering shows higher support due to strong collaboration")
 - Notable outliers or anomalies
 - Department-level differences
@@ -1451,7 +1528,7 @@ def forecast_scenario(
     try:
         department_aggregates = compute_department_aggregates(probabilities, hidden_state)
         level_aggregates = compute_level_aggregates(probabilities, hidden_state)
-        aggregate_outcomes = compute_aggregate_outcomes(probabilities)
+        aggregate_outcomes = compute_aggregate_outcomes(probabilities, hidden_state)
         feature_importance = compute_feature_importance(probabilities, hidden_state)
     except Exception as e:
         return {
@@ -1504,7 +1581,7 @@ Narrative Context:
 Computed Results Summary:
 - Total Employees: {num_employees}
 - Overall Support Probability: {support_mean:.3f} (std: {support_std:.3f})
-- Top Sentiment Class: {aggregate_outcomes['top_class']}
+- CEO Decision: {aggregate_outcomes['top_class']} ({aggregate_outcomes['probabilities'][aggregate_outcomes['top_class']]:.1%})
 
 Department-Level Probabilities:
 {json.dumps(dept_summary, indent=2)}
@@ -1521,11 +1598,12 @@ Organizational Context:
 - Visibility: {hidden_state.get('situation_seed', {}).get('visibility', 'unknown')}{narrative_section}
 
 Focus on explaining:
-1. Why certain departments show higher/lower support
-2. Notable patterns or outliers
-3. Network effects (how influence propagated)
-4. Key factors driving the forecast
-5. How the company's story/culture (if provided) aligns with these results
+1. The CEO's decision and what factors influenced it
+2. Why certain departments show higher/lower support
+3. Notable patterns or outliers
+4. Network effects (how influence propagated)
+5. Key factors driving the forecast
+6. How the company's story/culture (if provided) aligns with these results
 
 CRITICAL: Keep rationale under 500 characters. Be concise and focus on the most important insights only.
 """
